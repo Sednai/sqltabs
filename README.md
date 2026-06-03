@@ -75,16 +75,27 @@ inconvenient, build everything in CI instead (below).
 
 **All platforms via CI** — the included GitHub Actions workflow
 ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds Linux
-(AppImage + deb + rpm on `ubuntu-latest`) and macOS (dmg on `macos-latest`) and
-uploads them as artifacts. Trigger it from the **Actions** tab
-("build-installers" → *Run workflow*) or by pushing a `v*` tag — the easiest way
-to get the macOS build without owning a Mac.
+(AppImage + deb + rpm on `ubuntu-latest`), macOS (dmg on `macos-latest`) and
+Windows (nsis `.exe` on `windows-latest`). Trigger it from the **Actions** tab
+("build-installers" → *Run workflow*) to get the installers as downloadable
+**artifacts**, or push a version tag to also publish a release:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+A tagged run gathers every installer and creates a **draft GitHub Release** with
+them attached — review it under *Releases* and click *Publish*. This is the
+easiest way to build the macOS and Windows installers without owning those
+machines.
 
 | Platform | Installers |
 |----------|------------|
 | Ubuntu / Debian | `.deb`, `.AppImage` |
 | Fedora / RHEL | `.rpm`, `.AppImage` |
 | macOS | `.dmg` |
+| Windows | `.exe` (NSIS) |
 
 The macOS dmg is **unsigned** by default (first launch: right-click → *Open*).
 For notarized distribution, add an Apple Developer ID certificate and signing
