@@ -34,7 +34,13 @@
       "category": "public.app-category.developer-tools",
       "icon": "build-resources/icon.icns",
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ]
     },
     "dmg": {
