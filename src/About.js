@@ -69,7 +69,7 @@ var About = React.createClass({
                     <table className="about-table"><tr>
                     <td><img className="about-logo" src="logo.png"/></td>
                     <td> <p> SQL Tabs v{pkg.version} </p>
-                         <p> <a href="#" onClick={function(){Shell.openExternal('http://www.sqltabs.com');}}>www.sqltabs.com</a></p>
+                         <p> <a href="#" onClick={function(){Shell.openExternal('http:/github.com/Sednai/sqltabs');}}>Sednai fork of sqltabs</a></p>
                     </td>
                     </tr></table>
 
