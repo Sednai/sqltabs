@@ -17,6 +17,7 @@
 
 var MicroEvent = require('microevent');
 var Config = require('./Config');
+var SessionStore = require('./SessionStore');
 var fs = require('fs');
 var EOL = require('os').EOL;
 var Executor = require('./Executor');
@@ -45,6 +46,7 @@ var Tab = function(id, connstr){
     this.historyItem = 0;
     this.newVersion = null;
     this.tmpScript = null;
+    this.script = null; // current editor content, kept in sync for session autosave
 
     this.getTitle = function(){
         if (this.filename != null){
@@ -319,6 +321,15 @@ var _TabsStore = function(){
         }
     };
 
+    // store the current editor content for a tab and (debounced) persist the
+    // session so unsaved work is not lost on a crash/freeze/quit.
+    this.setScript = function(id, content){
+        if (id in this.tabs){
+            this.tabs[id].script = content;
+            SessionStore.scheduleSave(this);
+        }
+    };
+
     this.getTabByFilename = function(filename){
         for (var id in this.tabs){
             if (this.tabs[id].filename == filename){
@@ -468,8 +479,21 @@ var _TabsStore = function(){
         Config.saveAutoCompletion(auto_completion);
     }
 
-    // restore recent connection string on startup
-    if (typeof(Config.getConnHistory()) != 'undefined' && Config.getConnHistory().length > 0){
+    // restore previously open tabs (and their unsaved content) on startup;
+    // fall back to a single tab on the most recent connection string.
+    var session = SessionStore.load();
+    if (session != null && session.tabs && session.tabs.length > 0){
+        var self = this;
+        session.tabs.forEach(function(t){
+            var id = self.newTab(t.connstr);
+            if (t.filename != null){ self.tabs[id].filename = t.filename; }
+            if (t.script != null){ self.tabs[id].script = t.script; }
+        });
+        var sel = session.selectedIndex;
+        if (typeof sel === 'number' && sel >= 0 && sel < this.order.length){
+            this.selectedTab = this.order[sel];
+        }
+    } else if (typeof(Config.getConnHistory()) != 'undefined' && Config.getConnHistory().length > 0){
         var connstr = Config.getConnHistory()[0];
         this.newTab(connstr);
     } else {

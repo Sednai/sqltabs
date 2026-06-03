@@ -19,7 +19,7 @@ var React = require('react');
 var ReactDOM = require('react-dom');
 var Actions = require('./Actions');
 var TabsStore = require('./TabsStore');
-var { remote } = require('electron');
+var remote = require('@electron/remote');
 var dialog = remote.dialog;
 var fs = require('fs');
 var path = require('path');
@@ -179,17 +179,16 @@ var Project = React.createClass({
     addProjectHandler: function(){
         var self = this;
 
-        dialog.showOpenDialog({ properties: ['openDirectory']},
-            function(dirs){
-                if (typeof(dirs) != 'undefined' && dirs.length == 1){
-                    var dirname = dirs[0];
-                    var alias = path.basename(dirname);
-                    TabsStore.addProject(dirname, alias);
-                    self.update();
-                }
-                $("#project_div_"+self.props.eventKey).focus(); // move focus out of link, to prevent open dialog on enter
+        dialog.showOpenDialog({ properties: ['openDirectory']})
+        .then(function(result){
+            if (!result.canceled && result.filePaths && result.filePaths.length == 1){
+                var dirname = result.filePaths[0];
+                var alias = path.basename(dirname);
+                TabsStore.addProject(dirname, alias);
+                self.update();
             }
-        );
+            $("#project_div_"+self.props.eventKey).focus(); // move focus out of link, to prevent open dialog on enter
+        });
     },
 
     toolbar: function(){

@@ -40,6 +40,12 @@ var Editor = React.createClass({
         if (TabsStore.tmpScript != null){
             script = TabsStore.tmpScript;
             TabsStore.tmpScript = null;
+        } else {
+            // restored session content for this tab, if any
+            var tab = TabsStore.tabs[this.props.eventKey];
+            if (tab != null && tab.script != null){
+                script = tab.script;
+            }
         }
 
         this.completion_words = TabsStore.getCompletionWords();
@@ -84,6 +90,7 @@ var Editor = React.createClass({
         TabsStore.bind('toggle-project-'+this.props.eventKey, this.hideCompleter);
         TabsStore.bind('switch-view-'+this.props.eventKey, this.switchViewHandler);
         TabsStore.bind('completion-update', this.completionUpdateHandler);
+        TabsStore.bind('persist-now', this.persistNow);
 
         this.editor_input = $("#"+this.props.name).children(".ace_text-input").get()[0];
         this.editor_input.addEventListener("keydown", this.keyHandler, true);
@@ -132,6 +139,11 @@ var Editor = React.createClass({
             this.editor.session.setValue(this.state.script, -1);
         }
 
+        // autosave editor content to the session (debounced) so work survives a
+        // crash/freeze/quit. Attached after the initial setValue above so loading
+        // restored content does not itself trigger a redundant save.
+        this.editor.session.on('change', this.contentChangeHandler);
+
         this.editor.commands.removeCommand('showSettingsMenu'); // disable Cmd+,
 
         this.editor.focus();
@@ -159,8 +171,35 @@ var Editor = React.createClass({
         TabsStore.unbind('toggle-project-'+this.props.eventKey, this.hideCompleter);
         TabsStore.unbind('switch-view-'+this.props.eventKey, this.switchViewHandler);
         TabsStore.unbind('completion-update', this.completionUpdateHandler);
+        TabsStore.unbind('persist-now', this.persistNow);
+
+        if (this._contentTimer){ clearTimeout(this._contentTimer); this._contentTimer = null; }
+        if (this._completionTimer){ clearTimeout(this._completionTimer); this._completionTimer = null; }
+        if (this.editor){ this.editor.session.off('change', this.contentChangeHandler); }
 
         this.editor_input.removeEventListener("keydown", this.keyHandler);
+    },
+
+    // Debounced: push the current editor content into the tab and schedule a
+    // session save. Cheap on each keystroke (just resets a timer).
+    contentChangeHandler: function(){
+        var self = this;
+        if (this._contentTimer){ clearTimeout(this._contentTimer); }
+        this._contentTimer = setTimeout(function(){
+            self._contentTimer = null;
+            if (self.editor){
+                TabsStore.setScript(self.props.eventKey, self.editor.getValue());
+            }
+        }, 400);
+    },
+
+    // Synchronous capture used on window close (before the final session flush)
+    // so the last few keystrokes within the debounce window are not lost.
+    persistNow: function(){
+        var tab = TabsStore.tabs[this.props.eventKey];
+        if (tab != null && this.editor){
+            tab.script = this.editor.getValue();
+        }
     },
 
     switchViewHandler: function(){
@@ -350,16 +389,26 @@ var Editor = React.createClass({
         var scrollRow = self.editor.renderer.getScrollTopRow();
         var filename = TabsStore.getEditorFile(this.props.eventKey);
         var content = self.editor.getValue().replace(/[^\S\r\n]+$/gm, ""); // trim trailing spaces
-        fs.writeFile(filename, content, function(err) {
-            if(err) {
-                return console.log(err);
-            } else {
-                self.editor.session.setValue(content);
-                self.editor.clearSelection();
-                self.editor.gotoLine(position.row+1, 0);
-                self.editor.renderer.scrollToRow(scrollRow);
-            }
-        });
+
+        try {
+            // atomic write: write a temp file in the same directory, then rename
+            // over the target so an interrupted/failed write can't truncate the
+            // original file (a silent way to lose work).
+            var tmp = filename + '.sqltabs.tmp';
+            fs.writeFileSync(tmp, content);
+            fs.renameSync(tmp, filename);
+        } catch (err) {
+            require('@electron/remote').dialog.showErrorBox(
+                'Save failed',
+                'Could not save ' + filename + '\n\n' + (err && err.message ? err.message : String(err))
+            );
+            return;
+        }
+
+        self.editor.session.setValue(content);
+        self.editor.clearSelection();
+        self.editor.gotoLine(position.row+1, 0);
+        self.editor.renderer.scrollToRow(scrollRow);
     },
 
     fileCloseHandler: function(){
@@ -466,9 +515,13 @@ var Editor = React.createClass({
         if ([16,17,18,91].indexOf(e.keyCode) < 0){  // ignore shift, ctr, alt, command
             var vim_mode = this.getVimMode();
             if (vim_mode == null || vim_mode == 'insert'){ // don't show autocompletion in normal mode of vim
-                setTimeout(function(){
+                // debounce: recompute completion only after typing briefly pauses,
+                // instead of an O(words) scan + full dropdown rebuild on each keystroke.
+                if (this._completionTimer){ clearTimeout(this._completionTimer); }
+                this._completionTimer = setTimeout(function(){
+                    self._completionTimer = null;
                     self.adjustCompletion();
-                }, 1);
+                }, 120);
             }
         }
     },
@@ -546,7 +599,8 @@ var Editor = React.createClass({
 
     getHints: function(word){
         var hints = [];
-        for (var i=0; i< this.completion_words.length; i++){
+        var MAX_HINTS = 50; // bound the scan and the rendered dropdown size
+        for (var i=0; i< this.completion_words.length && hints.length < MAX_HINTS; i++){
             if (this.completion_words[i].toLowerCase().startsWith(word)){
                 hints.push(this.completion_words[i])
             }

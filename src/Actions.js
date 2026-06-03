@@ -20,8 +20,9 @@ const dispatcher = require('./Dispatcher');
 const AppDispatcher = dispatcher.AppDispatcher;
 const SignalsDispatcher = dispatcher.SignalsDispatcher;
 const DBDispatcher = dispatcher.DBDispatcher;
-const { remote } = require('electron');
+const remote = require('@electron/remote');
 const Dialog = remote.dialog;
+const TabsStore = require('./TabsStore');
 
 var QueryCallback = function(key, result){
     DBDispatcher.dispatch({
@@ -95,17 +96,39 @@ var Actions = {
     },
 
     close: function(id){
-        var closeDialog = () => Dialog.showMessageBox({
-            buttons: ["No", "Yes"],
-            defaultId: 1,
-            message: "Do you really want to close the tab?"
-        });
+        var targetId = (typeof id !== 'undefined') ? id : TabsStore.selectedTab;
+        var tab = TabsStore.tabs[targetId];
+        // Closing a tab removes it from the restorable session, so only worth a
+        // confirmation when it holds unsaved scratch content (no backing file).
+        var hasUnsavedScratch = tab != null
+            && tab.filename == null
+            && typeof tab.script === 'string'
+            && tab.script.trim() !== '';
 
-        if (typeof id !== 'undefined' || closeDialog()) {
+        var doClose = function(){
+            // dispatch the resolved target id, not the (possibly undefined) arg,
+            // so the right tab closes even if the selection changed while the
+            // confirmation dialog was open.
             AppDispatcher.dispatch({
                 eventName: 'close-tab',
-                key: id,
+                key: targetId,
             });
+        };
+
+        if (hasUnsavedScratch){
+            Dialog.showMessageBox({
+                type: 'question',
+                buttons: ["Cancel", "Close tab"],
+                defaultId: 0,
+                cancelId: 0,
+                message: "This tab has unsaved content that is not saved to a file. Close it anyway?"
+            }).then(function(res){
+                if (res && res.response === 1){
+                    doClose();
+                }
+            });
+        } else {
+            doClose();
         }
     },
 

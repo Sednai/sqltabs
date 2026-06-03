@@ -34,6 +34,8 @@ if (!db.object.config){
 
 var config = db.object.config;
 
+var rereadTimer = null; // debounce handle for external config-file changes
+
 var Conf = {
     saveSchemaFilter: function(newProps){
         config.schemaFilter = Object.assign({}, config.schemaFilter, newProps);
@@ -169,15 +171,28 @@ var Conf = {
 
     saveSync: function(){
         fs.unwatchFile(config_path);
-        db.saveSync();
-        fs.watchFile(config_path, this.fileChangeHandler)
+        try {
+            db.saveSync();
+        } catch (e) {
+            // never swallow the failure silently, and never leave the file
+            // unwatched (the finally re-arms the watcher even on error).
+            console.log('failed to save config: ' + e);
+        } finally {
+            fs.watchFile(config_path, this.fileChangeHandler);
+        }
     },
 
     fileChangeHandler: function(){
-        var db = lowdb(config_path);
-        config= db.object.config;
-        var Actions = require('./Actions');
-        Actions.rereadConfig();
+        // Coalesce rapid external changes: re-reading the file fans out to several
+        // store events and an app-wide re-render, so debounce to avoid a storm.
+        if (rereadTimer){ clearTimeout(rereadTimer); }
+        rereadTimer = setTimeout(function(){
+            rereadTimer = null;
+            var db = lowdb(config_path);
+            config = db.object.config;
+            var Actions = require('./Actions');
+            Actions.rereadConfig();
+        }, 200);
     },
 
 

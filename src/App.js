@@ -27,6 +27,7 @@ var Config = require('./Config');
 var Actions = require('./Actions');
 var CloudMessage = require('./CloudMessage');
 var UpgradeMessage = require('./UpgradeMessage');
+var SessionStore = require('./SessionStore');
 
 require('electron').ipcRenderer.on('open-file', function(event, path) {
     var existing_tab = TabsStore.getTabByFilename(path);
@@ -42,6 +43,20 @@ require('electron').ipcRenderer.on('open-url', function(event, url) {
 })
 
 require('./Menu');
+
+// Persist the session whenever the tab set / selection / connection changes
+// (all of which trigger 'change'). Editor content changes are persisted
+// separately from the editor itself. Debounced inside SessionStore.
+TabsStore.bind('change', function(){
+    SessionStore.scheduleSave(TabsStore);
+});
+
+// On window close, capture the latest editor content synchronously and write
+// the session immediately so nothing in the debounce window is lost.
+window.addEventListener('beforeunload', function(){
+    TabsStore.trigger('persist-now');
+    SessionStore.flush(TabsStore);
+});
 
 var mountNode = document.getElementById('root');
 

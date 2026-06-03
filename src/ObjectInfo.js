@@ -24,10 +24,8 @@ require('brace/theme/chrome');
 require('brace/theme/idle_fingers');
 require('brace/keybinding/vim');
 
-var Cassandra = require('./connectors/cassandra/Renderer.js');
-var Mysql = require('./connectors/mysql/Renderer.js');
-var MSsql = require('./connectors/mssql/Renderer.js');
-var Firebase = require('./connectors/firebase/Renderer.js');
+// Non-PostgreSQL object-info renderers (cassandra/mysql/mssql/firebase) were
+// dropped along with their connectors during modernization.
 
 var ObjectInfo = React.createClass({
 
@@ -517,35 +515,20 @@ LIMIT 100;`;
     render: function(){
         var info = this.props.info;
 
-        if (info.connector == 'mysql'){
-            return Mysql.info(this.props.eventKey, info, this.getInfo);
-        } else if (info.connector == 'mssql'){
-            return MSsql.info(this.props.eventKey, info, this.getInfo);
-        } else if (info.connector == 'firebase'){
-            return Firebase.info(this.props.eventKey, info, this.getInfo);
+        if (info.object_type == 'function'){
+            return this.render_function_info(info);
+        } else if (info.object_type == 'relation'){
+            return this.render_relation_info(info);
+        } else if (info.object_type == 'database'){
+            return this.render_db_info(info);
+        } else if (info.object_type == 'schema'){
+            return this.render_schema_info(info);
+        } else if (info.object_type == 'trigger'){
+            return this.render_trigger_info(info);
         } else {
-
-            if (info.object_type == 'function'){
-                return this.render_function_info(info);
-            } else if (info.object_type == 'relation'){
-                return this.render_relation_info(info);
-            } else if (info.object_type == 'database'){
-                return this.render_db_info(info);
-            } else if (info.object_type == 'schema'){
-                return this.render_schema_info(info);
-            } else if (info.object_type == 'trigger'){
-                return this.render_trigger_info(info);
-            } else if (info.object_type == 'cassandra_cluster'){
-                return Cassandra.renderCluster(this.props.eventKey, info, this.getInfo);
-            } else if (info.object_type == 'cassandra_keyspace'){
-                return Cassandra.renderKeyspace(this.props.eventKey, info, this.getInfo);
-            } else if (info.object_type == 'cassandra_table'){
-                return Cassandra.renderTable(this.props.eventKey, info, this.getInfo);
-            } else {
-                return (
-                    <div className="alert alert-danger">Not supported object type: {info.object_type}</div>
-                );
-            }
+            return (
+                <div className="alert alert-danger">Not supported object type: {info.object_type}</div>
+            );
         }
     }
 });

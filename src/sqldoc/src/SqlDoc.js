@@ -766,7 +766,31 @@ var SqlDoc = React.createClass({
     },
 
     scrollHandler: function(e){ // eslint-disable-line no-unused-vars
-        var container = $(ReactDOM.findDOMNode(this));
+        // rAF-throttle: the work below queries the DOM and forces a layout reflow
+        // for every dataset, which is far too expensive to run on every scroll
+        // tick. Coalesce to at most once per animation frame.
+        if (this._scrollRaf){
+            return;
+        }
+        var self = this;
+        this._scrollRaf = true;
+        window.requestAnimationFrame(function(){
+            self._scrollRaf = false;
+            self.handleScroll();
+        });
+    },
+
+    handleScroll: function(){
+        var node = ReactDOM.findDOMNode(this);
+        if (!node){ // unmounted between the scroll event and this animation frame
+            return;
+        }
+        var container = $(node);
+        // cache the container metrics once per frame; each .offset()/.height()
+        // forces a layout, so we avoid re-reading them for every dataset.
+        var container_offset_top = container.offset().top;
+        var container_height = container.height();
+
         for (var block_idx=0; block_idx < this.state.data.length; block_idx++){
             for (var dataset_idx=0; dataset_idx < this.state.data[block_idx].datasets.length; dataset_idx++){
 
@@ -776,15 +800,16 @@ var SqlDoc = React.createClass({
                 // hide/show floating header
                 var theader = $("#theader_"+dsid);
                 var tfooter = $("#tfooter_"+dsid);
-                if (typeof(theader.offset()) == 'undefined'){ // skip nontable blocks
+                var theader_box = theader.offset();
+                if (typeof(theader_box) == 'undefined'){ // skip nontable blocks
                     continue;
                 }
-                var theader_offset = theader.offset().top - container.offset().top + theader.height();
-                var tfooter_offset = tfooter.offset().top - container.offset().top;
+                var theader_offset = theader_box.top - container_offset_top + theader.height();
+                var tfooter_offset = tfooter.offset().top - container_offset_top;
 
                 if (theader_offset < 0 && tfooter_offset > 0){
                     this.floating_dsid = dsid;
-                    this.showFloatingHeader(dsid, theader.offset().left);
+                    this.showFloatingHeader(dsid, theader_box.left);
                 } else {
                     if (dsid == this.floating_dsid){
                         this.hideFloatingHeader(dsid);
@@ -800,9 +825,9 @@ var SqlDoc = React.createClass({
 
                 var limit_item = this.limit_item(dsid);
 
-                if (typeof(limit_item) != 'undefined' && typeof(container) != 'undefined'){
+                if (typeof(limit_item) != 'undefined'){
 
-                    var offset = limit_item.offset().top - container.offset().top - container.height();
+                    var offset = limit_item.offset().top - container_offset_top - container_height;
                     if (offset < 0){
                         this.renderNext(block_idx, dataset_idx);
                     }

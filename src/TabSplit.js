@@ -75,10 +75,12 @@ var TabSplit = React.createClass({
     splitter: null,
 
     horizontalResize: function(e){
-        var main_size = this.main_container.getBoundingClientRect();
-        var h1 = e.pageY - this.first_container.getBoundingClientRect().top;
+        // rects captured at drag start (see mouseDownHandler) so we don't force a
+        // layout reflow several times per mousemove.
+        var main_size = this._dragMain;
+        var h1 = e.pageY - this._dragFirst.top;
         var h_max = main_size.bottom - main_size.top - e.pageY;
-        var h2 = this.main_container.getBoundingClientRect().height - h1 - this.splitter.getBoundingClientRect().height;
+        var h2 = main_size.height - h1 - this._dragSplitter.height;
 
         if (h1 > 15 && h_max > 15) {
             this.first_container.style.width = "100%";
@@ -90,11 +92,11 @@ var TabSplit = React.createClass({
     },
 
     verticalResize: function(e){
-        var main_size = this.main_container.getBoundingClientRect();
-        var w1 = e.pageX - this.first_container.getBoundingClientRect().left;
+        var main_size = this._dragMain;
+        var w1 = e.pageX - this._dragFirst.left;
         var w_max = main_size.right - e.pageX;
-        var w_main = this.main_container.getBoundingClientRect().width;
-        var w_splitter = this.splitter.getBoundingClientRect().width;
+        var w_main = main_size.width;
+        var w_splitter = this._dragSplitter.width;
         var w2 = w_main - w1 - w_splitter;
 
         if (w1 > 15 && w_max > 15) {
@@ -139,6 +141,7 @@ var TabSplit = React.createClass({
         } else {
             TabsStore.unbind('switch-view-'+this.props.eventKey, this.switchViewHandler);
         }
+        if (this._rafId){ window.cancelAnimationFrame(this._rafId); this._rafId = null; }
         window.removeEventListener('resize', this.windowResizeHandler);
     },
 
@@ -187,6 +190,12 @@ var TabSplit = React.createClass({
     mouseDownHandler: function(e){
         e.stopPropagation();
         e.preventDefault();
+        // capture the rects that stay constant for the duration of the drag
+        // (the container's position and the splitter size don't change while
+        // dragging; only the cursor moves) to avoid repeated layout reflows.
+        this._dragMain = this.main_container.getBoundingClientRect();
+        this._dragFirst = this.first_container.getBoundingClientRect();
+        this._dragSplitter = this.splitter.getBoundingClientRect();
         this.setState({drag: true});
     },
 
@@ -194,11 +203,26 @@ var TabSplit = React.createClass({
         if (!this.state.drag){
             return;
         }
-        if (this.state.type == 'horizontal'){
-            this.horizontalResize(e);
-        } else { // vertical
-            this.verticalResize(e);
+        // rAF-throttle: coalesce rapid mousemove events into one resize per frame.
+        // Copy the coordinates now because React 0.14 pools synthetic events.
+        this._lastMove = { pageX: e.pageX, pageY: e.pageY };
+        if (this._rafPending){
+            return;
         }
+        var self = this;
+        this._rafPending = true;
+        this._rafId = window.requestAnimationFrame(function(){
+            self._rafPending = false;
+            self._rafId = null;
+            if (!self.state.drag){
+                return;
+            }
+            if (self.state.type == 'horizontal'){
+                self.horizontalResize(self._lastMove);
+            } else { // vertical
+                self.verticalResize(self._lastMove);
+            }
+        });
     },
 
     mouseUpHandler: function(e){

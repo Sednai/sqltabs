@@ -568,7 +568,7 @@ AND objsubid = 0";
     atttypmod "max_length", \
     a.attnotnull "not_null", \
     a.atthasdef "has_default", \
-    c.adsrc "default_value", \
+    pg_get_expr(c.adbin, c.adrelid) "default_value", \
     b.description "description" \
 FROM pg_attribute a \
     LEFT JOIN pg_description b \
@@ -637,7 +637,7 @@ GROUP BY conname, conindid;";
     _getCheckConstraints: function(id, connstr, password, object, callback, err_callback){ // eslint-disable-line no-unused-vars
 
         var query = " \
-SELECT conname, consrc \
+SELECT conname, pg_get_expr(conbin, conrelid) \
 FROM pg_constraint \
 WHERE conrelid = '"+object+"'::regclass \
 AND contype = 'c'";

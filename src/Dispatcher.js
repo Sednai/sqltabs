@@ -374,21 +374,45 @@ DBDispatcher.register(function(payload){
     return true; // Needed for Flux promise resolution
 });
 
-// background job for fetching auto completion words from databases
+// background job for fetching auto completion words from databases.
+// Runs over the DISTINCT connection strings of open tabs (not once per tab) and
+// only clears the in-progress flag after ALL of them have finished, so the next
+// interval can't re-enter and pile up redundant catalog queries on the database.
 var wordsUpdateInProgress = false;
 
 var updateCompletionWords = function(){
-    if (!wordsUpdateInProgress){
-        wordsUpdateInProgress = true;
-        for (var tab in TabsStore.tabs){
-            var connstr = TabsStore.getConnstr(tab);
-            Executor.getCompletionWords(connstr, function(words){
-                TabsStore.updateCompletionWords(words);
-                TabsStore.trigger("completion-update");
-                wordsUpdateInProgress = false;
-            });
+    if (wordsUpdateInProgress){
+        return;
+    }
+
+    var seen = {};
+    var connstrs = [];
+    for (var tab in TabsStore.tabs){
+        var cs = TabsStore.getConnstr(tab);
+        if (cs && !seen[cs]){
+            seen[cs] = true;
+            connstrs.push(cs);
         }
     }
+    if (connstrs.length === 0){
+        return;
+    }
+
+    wordsUpdateInProgress = true;
+    var pending = connstrs.length;
+    var done = function(words){
+        if (words){
+            TabsStore.updateCompletionWords(words);
+        }
+        pending--;
+        if (pending <= 0){
+            wordsUpdateInProgress = false;
+            TabsStore.trigger("completion-update");
+        }
+    };
+    connstrs.forEach(function(cs){
+        Executor.getCompletionWords(cs, done);
+    });
 }
 updateCompletionWords();
 setInterval(updateCompletionWords, 10000);

@@ -21,6 +21,15 @@ var util = require('util');
 var url = require('url');
 var now = require("performance-now")
 
+// The original libpq-based client returned every column as its raw Postgres text
+// representation. The rest of the app was built around string cell values (the CSV
+// export calls col.replace(), the result grid renders text, booleans show as 't'/'f',
+// timestamps in Postgres' own format, etc.). Stock node-postgres instead parses values
+// into JS types (numbers, booleans, Date). To keep behaviour identical, disable pg's
+// type parsing and hand back the raw text for every type (NULL is still passed through
+// as null by pg before the parser runs).
+var TEXT_TYPES = { getTypeParser: function(){ return function(val){ return val; }; } };
+
 var Client = function(connstr, password, redshift){
     var self = this;
 
@@ -93,7 +102,7 @@ var Client = function(connstr, password, redshift){
     this._executeQuery = function(query, callback, err_callback){
         self.Response = new Response(query)
 
-        self.client.query({text: query, rowMode: 'array', multiResult: true}, function(err, res){
+        self.client.query({text: query, rowMode: 'array', types: TEXT_TYPES}, function(err, res){
             self.isBusy = false;
             self.Response.finish();
             if (err) {
@@ -113,8 +122,12 @@ var Client = function(connstr, password, redshift){
 
 
                 res.forEach(function(r){
-                    if (r.cmdStatus === null){
-                        r.cmdStatus = "SELECT"; // empty query
+                    if (r.cmdStatus == null){
+                        // stock node-postgres exposes the command tag as `command`
+                        // (e.g. 'SELECT', 'EXPLAIN', 'INSERT'); the old libpq fork
+                        // used `cmdStatus`. Map it so Dataset keeps working. Empty
+                        // queries report no command -> treat as SELECT.
+                        r.cmdStatus = r.command || "SELECT";
                     }
                     ds = new Dataset(r);
                     self.Response.datasets.push(ds);
@@ -146,9 +159,17 @@ var Client = function(connstr, password, redshift){
     };
 
     this.noticeHandler = function(message){
+        // Stock node-postgres emits a 'notice' event for any server NOTICE/WARNING.
+        // These can arrive outside of a query (e.g. a collation-version warning at
+        // connect time), when there is no active Response to attach them to -- guard
+        // against that instead of crashing. The event payload is a NoticeMessage
+        // object, so surface its text rather than the object itself.
+        if (self.Response == null){
+            return;
+        }
         self.Response.datasets.push({
             resultStatus: 'PGRES_NONFATAL_ERROR',
-            resultErrorMessage: message,
+            resultErrorMessage: (message && message.message) ? message.message : String(message),
         });
     };
 

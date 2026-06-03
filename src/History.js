@@ -47,8 +47,13 @@ var History = {
             history.pop();
         }
 
-        db.saveSync();
-        fs.watchFile(history_path, this.fileChangeHandler);
+        try {
+            db.saveSync();
+        } catch (e) {
+            console.log('failed to save history: ' + e);
+        } finally {
+            fs.watchFile(history_path, this.fileChangeHandler);
+        }
     },
 
     get: function(idx){

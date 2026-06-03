@@ -29,11 +29,21 @@ function isDev() {
 var electron = require('electron');
 
 if (isDev()){
-    require('electron-reload')(__dirname);
+    try {
+        require('electron-reload')(__dirname);
+    } catch (e) {
+        console.log('electron-reload not available: ' + e);
+    }
 }
 
 var app = electron.app;
 var BrowserWindow = electron.BrowserWindow;
+
+// The renderer still uses node integration + the (now community-maintained)
+// remote module. Initialize @electron/remote once in the main process; each
+// window's webContents must then be explicitly enabled in createWindow().
+var remoteMain = require('@electron/remote/main');
+remoteMain.initialize();
 
 var mainWindow = null;
 var urlToOpen = null;
@@ -45,9 +55,16 @@ var createWindow = function(){
         height: 600,
         title: 'SQL Tabs',
         webPreferences: {
+            // This is a single-user, local, file:// app whose renderer relies on
+            // require('fs')/require('electron') throughout. Keep node integration
+            // on and context isolation/sandbox off so that keeps working. A proper
+            // preload + contextBridge migration is tracked as a later hardening step.
             nodeIntegration: true,
+            contextIsolation: false,
+            sandbox: false,
         },
     });
+    remoteMain.enable(mainWindow.webContents);
     mainWindow.maximize();
     if (isDev()){
         mainWindow.toggleDevTools();

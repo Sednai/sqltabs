@@ -21,7 +21,7 @@ const Modal = require('react-bootstrap').Modal;
 const Button = require('react-bootstrap').Button;
 const TabsStore = require('./TabsStore');
 const Actions = require('./Actions');
-const { remote } = require('electron');
+const remote = require('@electron/remote');
 const dialog = remote.dialog;
 
 const PasswordDialog = React.createClass({
@@ -82,15 +82,13 @@ const PasswordDialog = React.createClass({
     },
 
     chooseServiceFile: function(){
-        dialog.showOpenDialog({ properties: ['openFile']},
-            filenames => {
-                console.log(filenames);
-                if (filenames.length > 0){
-                    this.secretInput.value = filenames[0];
-                    this.secretInput.select();
-                }
+        dialog.showOpenDialog({ properties: ['openFile']})
+        .then(result => {
+            if (!result.canceled && result.filePaths && result.filePaths.length > 0){
+                this.secretInput.value = result.filePaths[0];
+                this.secretInput.select();
             }
-        );
+        });
     },
 
     renderPasswordInput: function(secret){

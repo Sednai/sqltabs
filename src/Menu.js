@@ -17,16 +17,21 @@
 
 var Actions = require ('./Actions');
 var TabsStore = require('./TabsStore');
-var { remote } = require('electron');
+var remote = require('@electron/remote');
 var Menu = remote.Menu;
 var BrowserWindow = remote.BrowserWindow;
 var dialog = remote.dialog;
 var app = remote.app;
 
+// Modern Electron dialogs return a Promise of {canceled, filePaths|filePath}
+// instead of taking a callback. Guard against cancel (filePaths/filePath unset).
 var openFile = function(){
-    dialog.showOpenDialog({ properties: ['openFile', 'multiSelections']},
-    function(filenames){
-        filenames.forEach(function(filename){
+    dialog.showOpenDialog({ properties: ['openFile', 'multiSelections']})
+    .then(function(result){
+        if (result.canceled || result.filePaths == null){
+            return;
+        }
+        result.filePaths.forEach(function(filename){
             var existing_tab = TabsStore.getTabByFilename(filename);
             if ( existing_tab != null){
                 Actions.select(existing_tab);
@@ -42,28 +47,28 @@ var saveFile = function(){
     if ( filename != null){
         Actions.saveFile(filename);
     } else {
-        dialog.showSaveDialog(function(filename){
-            if (typeof(filename) != 'undefined'){
-                Actions.saveFile(filename);
+        dialog.showSaveDialog({}).then(function(result){
+            if (!result.canceled && result.filePath){
+                Actions.saveFile(result.filePath);
             }
-        })
+        });
     }
 }
 
 var saveFileAs = function(){
-    dialog.showSaveDialog(function(filename){
-        if (typeof(filename) != 'undefined'){
-            Actions.saveFile(filename);
+    dialog.showSaveDialog({}).then(function(result){
+        if (!result.canceled && result.filePath){
+            Actions.saveFile(result.filePath);
         }
-    })
+    });
 }
 
 var exportResult = function(format){
-    dialog.showSaveDialog(function(filename){
-        if (typeof(filename) != 'undefined'){
-            Actions.exportResult(filename, format);
+    dialog.showSaveDialog({}).then(function(result){
+        if (!result.canceled && result.filePath){
+            Actions.exportResult(result.filePath, format);
         }
-    })
+    });
 }
 
 var template;
