@@ -85,6 +85,7 @@ jobs:
         run: |
           mapfile -t files < <(find artifacts -type f)
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             --draft \
             --generate-notes \
             --title "$GITHUB_REF_NAME" \
