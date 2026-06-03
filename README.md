@@ -10,7 +10,7 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 > from upstream (MySQL, MS SQL, Cassandra, Firebase) have been removed.
 
 ## Supported databases
-
+- Sednai **PG-XZ**
 - **PostgreSQL**
 - **Amazon Redshift** (use a `redshift://` connection string)
 - **AlaSQL** — a small in-process SQL engine used for scratch/`about:` tabs
