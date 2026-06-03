@@ -47,13 +47,20 @@ body{
 .tab-container {
     width: 100%;
     flex: 1;
+    display: flex;
+    flex-direction: column;
+    /* without min-height:0 a flex:1 item keeps min-height:auto and grows to its
+       content (a large result table), blowing past the window height and
+       collapsing the flex:1 descendants to 0. */
+    min-height: 0;
 }
 
 .tab-content {
     display: flex;
     flex-direction: column;
     width: 100%;
-    min-height: 100%;
+    flex: 1;
+    min-height: 0;
 }
 
 .tab-content-without-toolbar {
@@ -61,6 +68,7 @@ body{
     flex-direction: column;
     width: 100%;
     flex: 1;
+    min-height: 0;
 }
 
 .form-group{
@@ -105,12 +113,20 @@ body{
     flex-direction: column;
     width: 100%;
     flex: 1;
+    /* Modern flexbox defaults min-height/min-width to `auto`, which prevents a
+       flex item from shrinking below its content. Without this, a pane holding a
+       large result table can't shrink, so its inner overflow:auto never scrolls
+       and the sibling pane gets crowded out. */
+    min-height: 0;
+    min-width: 0;
 }
 
 .tab-split-container{
     display: flex;
     flex-direction: column;
     overflow: auto;
+    min-height: 0;
+    min-width: 0;
 }
 
 .hsplitter {
@@ -145,6 +161,11 @@ body{
     height: 100%;
     width: 100%;
     overflow: auto;
+    /* Disable scroll anchoring: when the lazy loader appends rows, Chromium would
+       otherwise nudge scrollTop to keep position, which fires another scroll event
+       and re-triggers the loader -- a runaway loop that loads the whole result on
+       a single scroll. */
+    overflow-anchor: none;
     padding-bottom: 40px;
     padding-top: 5px;
 }

@@ -447,6 +447,9 @@ LIMIT 100;`;
         var records = <p> Records: <span className="ace_constant">{info.object.records}</span></p>;
         var size = <p> Size: <span className="ace_constant">{info.object.size}</span> </p>;
         var total_size = <p> Total Size: <span className="ace_constant">{info.object.total_size}</span></p>;
+        // hide the size lines when sizes are unavailable (e.g. distributed/pgxc tables)
+        if (info.object.size == null){ size = null; }
+        if (info.object.total_size == null){ total_size = null; }
 
         // view script
         var view_script = null;

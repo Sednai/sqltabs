@@ -283,7 +283,7 @@ if (process.platform == 'darwin'){
             },
             {type: 'separator'},
             {label: "New Tab",
-             accelerator: "Ctrl+N",
+             accelerator: "Ctrl+T",
              click: function(){Actions.select(0)},
             },
             {label: "Close Tab",

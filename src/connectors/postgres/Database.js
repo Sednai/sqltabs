@@ -288,29 +288,17 @@ var Database = {
     _findRelation: function(id, connstr, password, object, callback, err_callback){
         var self = this;
 
-        var query;
-        if (self.redshift){
-            query = "select n.nspname, c.relname, c.relkind, \
-'<not supported>' size, \
-'<not supported>' total_size, \
-reltuples::bigint \
+        // Do NOT compute sizes in this core lookup: pg_relation_size /
+        // pg_total_relation_size error out on distributed tables (Postgres-XC/XL),
+        // which would fail the whole query and make Object Info wrongly report the
+        // table as "not found". Sizes are fetched separately below, tolerating
+        // failure (also covers Redshift, which doesn't support them either).
+        var query = "select n.nspname, c.relname, c.relkind, reltuples::bigint \
 from  \
 pg_class c, \
 pg_namespace n \
 where c.oid = '"+object+"'::regclass \
 and n.oid = c.relnamespace;";
-        }
-        else {
-            query = "select n.nspname, c.relname, c.relkind, \
-pg_size_pretty(pg_relation_size(c.oid)) size, \
-pg_size_pretty(pg_total_relation_size(c.oid)) total_size, \
-reltuples::bigint \
-from  \
-pg_class c, \
-pg_namespace n \
-where c.oid = '"+object+"'::regclass \
-and n.oid = c.relnamespace;";
-        }
 
         this._getData(id, connstr, password, query,
         function(data){
@@ -320,9 +308,9 @@ and n.oid = c.relnamespace;";
                     schema: row[0],
                     relname: row[1],
                     relkind: row[2],
-                    size: row[3],
-                    total_size: row[4],
-                    records: row[5],
+                    size: null,        // filled by get_size below when supported
+                    total_size: null,
+                    records: row[3],
                 };
 
                 /// fill the relation object with details
@@ -433,7 +421,28 @@ and n.oid = c.relnamespace;";
                     }
                 }
 
-                async.series([get_columns, get_pk, get_check_constraints, get_indexes, get_triggers, get_view_def, get_foreign_keys, get_sequence_info],
+                var get_size = function(done){
+                    if (self.redshift){ // redshift doesn't support these
+                        done();
+                        return;
+                    }
+                    var query = "select pg_size_pretty(pg_relation_size('"+object+"'::regclass)), \
+pg_size_pretty(pg_total_relation_size('"+object+"'::regclass))";
+                    self._getData(id, connstr, password, query,
+                    function(data){
+                        if (data.length > 0){
+                            relation.size = data[0][0];
+                            relation.total_size = data[0][1];
+                        }
+                        done();
+                    },
+                    function(err){ // size unavailable (e.g. distributed/pgxc tables) - ignore
+                        console.log(err);
+                        done();
+                    });
+                };
+
+                async.series([get_columns, get_pk, get_check_constraints, get_indexes, get_triggers, get_view_def, get_foreign_keys, get_sequence_info, get_size],
                 function(){
                     callback(relation);
                 }
