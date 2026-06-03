@@ -95,6 +95,7 @@ AppDispatcher.register( function(payload) {
                 if (payload.filename){
                     TabsStore.openFile(payload.filename, tabid);
                     TabsStore.trigger('open-file-'+tabid, payload.filename);
+                    TabsStore.trigger('change'); // refresh the tab title now that the filename is set
                 }
             } else {
                 TabsStore.selectTab(payload.key);

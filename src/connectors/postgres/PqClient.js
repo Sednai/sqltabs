@@ -30,6 +30,25 @@ var now = require("performance-now")
 // as null by pg before the parser runs).
 var TEXT_TYPES = { getTypeParser: function(){ return function(val){ return val; }; } };
 
+// pg@8 connects through Node sockets, which throw a bare "AggregateError" when
+// every resolved address fails (e.g. localhost resolving to both ::1 and
+// 127.0.0.1, both refused). The UI shows error.toString(), so flatten it into a
+// readable message that names the actual failure(s) instead of "AggregateError".
+var flattenConnError = function(err){
+    if (err && err.name === 'AggregateError' && Array.isArray(err.errors) && err.errors.length > 0){
+        var seen = {};
+        var msgs = [];
+        err.errors.forEach(function(e){
+            var m = (e && e.message) ? e.message : String(e);
+            if (!seen[m]){ seen[m] = true; msgs.push(m); }
+        });
+        var flat = new Error('could not connect to server: ' + msgs.join('; '));
+        flat.code = err.errors[0] && err.errors[0].code;
+        return flat;
+    }
+    return err;
+};
+
 var Client = function(connstr, password, redshift){
     var self = this;
 
@@ -149,7 +168,7 @@ var Client = function(connstr, password, redshift){
             self.client.connect(function(err){
                 if (err){
                     self.isBusy = false;
-                    err_callback(err);
+                    err_callback(flattenConnError(err));
                 } else {
                     self.connected = true;
                     self._executeQuery(query, callback, err_callback)
