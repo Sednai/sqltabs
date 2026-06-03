@@ -62,9 +62,28 @@ var createWindow = function(){
             nodeIntegration: true,
             contextIsolation: false,
             sandbox: false,
+            webviewTag: false,
+            allowRunningInsecureContent: false,
         },
     });
     remoteMain.enable(mainWindow.webContents);
+
+    // Security: this app should only ever show its own local page. Don't let it
+    // navigate to a remote origin or open a new (node-enabled) window; send any
+    // external URL to the OS browser instead.
+    mainWindow.webContents.setWindowOpenHandler(function(details){
+        if (/^https?:\/\//i.test(details.url)){
+            electron.shell.openExternal(details.url);
+        }
+        return { action: 'deny' };
+    });
+    mainWindow.webContents.on('will-navigate', function(event, url){
+        if (/^https?:\/\//i.test(url)){
+            event.preventDefault();
+            electron.shell.openExternal(url);
+        }
+    });
+
     mainWindow.maximize();
     if (isDev()){
         mainWindow.toggleDevTools();

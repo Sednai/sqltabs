@@ -32,24 +32,32 @@ if (typeof(document) != "undefined"){
     document.openExternal = openExternal;
 }
 
+// Non-printed control chars (excluding tab/newline/carriage-return) shown as hex.
+// A single regex pass replaces the old per-cell scan over 29 char codes, which
+// matters for rendering large result sets quickly.
+var CONTROL_CHARS_RE = /[\x01-\x08\x0b\x0c\x0e-\x1f]/;
+var CONTROL_CHARS_RE_G = /[\x01-\x08\x0b\x0c\x0e-\x1f]/g;
+// A URL that is safe to drop into the inline openExternal('...') handler below:
+// no quotes, backslash, angle brackets, backtick or whitespace that a crafted
+// cell value could use to break out of the JS string / HTML attribute.
+var SAFE_URL_RE = /^https?:\/\/[^\s'"<>`\\]+$/;
+
 var formatValue = function(value){
-    // escape html tags
+    // escape html tags so cell content can't inject markup when the row is
+    // rendered via dangerouslySetInnerHTML
     value = value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-    // replace non-printed characters with their hex codes
-    var non_printed_chars = [1,2,3,4,5,6,7,8,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31];
-
-    if (non_printed_chars.some(function(c){ return value.indexOf(String.fromCharCode(c)) >= 0; })) { // if at least one non printed character found
-
-        non_printed_chars.forEach(function(c){
-            var c_hex = '<span class="non-printed-char">\\x'+c.toString(16).toUpperCase()+'</span>';
-            var c_str = String.fromCharCode(c);
-            value = value.replace(c_str, c_hex);
+    // replace non-printed characters with their hex codes (one test, then one
+    // pass that replaces every occurrence)
+    if (CONTROL_CHARS_RE.test(value)) {
+        value = value.replace(CONTROL_CHARS_RE_G, function(c){
+            return '<span class="non-printed-char">\\x'+c.charCodeAt(0).toString(16).toUpperCase()+'</span>';
         });
     }
 
-    // make links from URLs
-    if (value.indexOf('http://') == 0 || value.indexOf('https://') == 0){
+    // make links from URLs, but only clean ones (see SAFE_URL_RE) so the inline
+    // handler can't be hijacked by a value containing a quote/backslash
+    if (SAFE_URL_RE.test(value)){
         value = '<a href="#" onClick="openExternal(\''+value+'\')">'+value+'</a>';
     }
     return value;

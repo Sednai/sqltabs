@@ -4,6 +4,27 @@
     <title>SQL Tabs</title>
     <meta http-equiv="Content-Type" content="text/html;charset=utf-8">
 
+    <!--
+      Defense-in-depth CSP. Blocks loading remote scripts/objects/frames and base
+      hijacking. 'unsafe-inline'/'unsafe-eval' are required by the app itself
+      (inline bootstrap script, React inline styles, alasql compiling via Function,
+      ace), so this is not a full mitigation on its own; result-cell content is
+      HTML-escaped at render time (see formatValue) to stop injection in the first
+      place. blob: workers are allowed for the ace editor.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval';
+      worker-src 'self' blob:;
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: https:;
+      font-src 'self' data:;
+      connect-src 'self' https: data:;
+      object-src 'none';
+      frame-src 'none';
+      base-uri 'none'">
+
+
     <link rel="stylesheet" href="node_modules/bootstrap/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="node_modules/c3/c3.min.css" >
     <link rel="stylesheet" href="css/bootstrap.dark.css" id="theme_stylesheet">

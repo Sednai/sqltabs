@@ -15,35 +15,45 @@
   "build": {
     "appId": "com.sqltabs",
     "productName": "SQL Tabs",
+    "directories": {
+      "buildResources": "build-resources",
+      "output": "dist"
+    },
     "files": [
       "index.html",
       "main.js",
       "logo.png",
       "logo.ico",
       "css",
+      "fonts",
       "build/**/*",
       "node_modules/**/*",
       "package.json"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "logo.icns",
-      "hardenedRuntime": true,
-      "publish": [
-        "github"
+      "icon": "build-resources/icon.icns",
+      "target": [
+        "dmg"
       ]
     },
+    "dmg": {
+      "writeUpdateInfo": false
+    },
     "linux": {
-      "icon": "logo.icns",
+      "icon": "build-resources/icon.png",
       "category": "Development",
-      "publish": [
-        "github"
+      "maintainer": "Sednai <noreply@sedn.ai>",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
       ]
     },
     "win": {
-      "icon": "logo.png",
-      "publish": [
-        "github"
+      "icon": "logo.ico",
+      "target": [
+        "nsis"
       ]
     }
   },
@@ -77,6 +87,7 @@
     "@babel/core": "^7.24.0",
     "@babel/plugin-transform-react-jsx": "^7.23.0",
     "electron": "^31.7.0",
+    "electron-builder": "^26.0.0",
     "electron-reload": "^1.5.0"
   },
   "scripts": {
@@ -84,6 +95,9 @@
     "start": "electron ./ --dev",
     "compile": "babel --plugins @babel/plugin-transform-react-jsx --out-dir=build src/",
     "compile:watch": "babel --plugins @babel/plugin-transform-react-jsx --out-dir=build src/ --watch",
-    "build": "npm run compile"
+    "build": "npm run compile",
+    "dist:linux": "npm run compile && electron-builder --linux --publish never",
+    "dist:mac": "npm run compile && electron-builder --mac --publish never",
+    "dist:win": "npm run compile && electron-builder --win --publish never"
   }
 }

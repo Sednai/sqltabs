@@ -1,0 +1,51 @@
+name: build-installers
+
+# Builds installers for Linux (AppImage + deb + rpm) and macOS (dmg).
+# Triggered manually, or on a version tag (v1.2.0, ...). No native modules are
+# used, so there is nothing to rebuild per platform. macOS builds are unsigned
+# (CSC_IDENTITY_AUTO_DISCOVERY=false); set up signing/notarization separately if
+# you need notarized .dmg distribution.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # electron-builder needs the rpm toolchain to produce the Fedora .rpm
+      - run: sudo apt-get update && sudo apt-get install -y rpm
+      - run: npm install
+      - run: npm run compile
+      - run: npx electron-builder --linux AppImage deb rpm --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run compile
+      - run: npx electron-builder --mac dmg --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-installer
+          path: dist/*.dmg
