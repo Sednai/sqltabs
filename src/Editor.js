@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -37,14 +38,18 @@ var Editor = React.createClass({
 
     getInitialState: function(){
         var script = null;
+        this._restoreCursor = null;
+        this._restoreScrollRow = null;
         if (TabsStore.tmpScript != null){
             script = TabsStore.tmpScript;
             TabsStore.tmpScript = null;
         } else {
-            // restored session content for this tab, if any
+            // restored session content (and cursor/scroll) for this tab, if any
             var tab = TabsStore.tabs[this.props.eventKey];
             if (tab != null && tab.script != null){
                 script = tab.script;
+                this._restoreCursor = tab.cursor || null;
+                if (tab.scrollRow != null){ this._restoreScrollRow = tab.scrollRow; }
             }
         }
 
@@ -137,12 +142,22 @@ var Editor = React.createClass({
 
         if (this.state.script != null){ // load script
             this.editor.session.setValue(this.state.script, -1);
+            // restore the saved cursor + scroll position for this tab, before the
+            // listeners below are attached so the restore doesn't trigger a save
+            if (this._restoreCursor != null){
+                this.editor.moveCursorToPosition(this._restoreCursor);
+                this.editor.clearSelection();
+            }
+            if (this._restoreScrollRow != null){
+                this.editor.renderer.scrollToRow(this._restoreScrollRow);
+            }
         }
 
-        // autosave editor content to the session (debounced) so work survives a
-        // crash/freeze/quit. Attached after the initial setValue above so loading
-        // restored content does not itself trigger a redundant save.
+        // autosave editor content + cursor/scroll to the session (debounced) so the
+        // work and the editing position survive a crash/freeze/quit. Attached after
+        // the initial setValue/restore above so it doesn't trigger a redundant save.
         this.editor.session.on('change', this.contentChangeHandler);
+        this.editor.selection.on('changeCursor', this.contentChangeHandler);
 
         this.editor.commands.removeCommand('showSettingsMenu'); // disable Cmd+,
 
@@ -175,7 +190,10 @@ var Editor = React.createClass({
 
         if (this._contentTimer){ clearTimeout(this._contentTimer); this._contentTimer = null; }
         if (this._completionTimer){ clearTimeout(this._completionTimer); this._completionTimer = null; }
-        if (this.editor){ this.editor.session.off('change', this.contentChangeHandler); }
+        if (this.editor){
+            this.editor.session.off('change', this.contentChangeHandler);
+            this.editor.selection.off('changeCursor', this.contentChangeHandler);
+        }
 
         this.editor_input.removeEventListener("keydown", this.keyHandler);
     },
@@ -188,7 +206,10 @@ var Editor = React.createClass({
         this._contentTimer = setTimeout(function(){
             self._contentTimer = null;
             if (self.editor){
-                TabsStore.setScript(self.props.eventKey, self.editor.getValue());
+                var pos = self.editor.getCursorPosition();
+                TabsStore.setScript(self.props.eventKey, self.editor.getValue(),
+                    {row: pos.row, column: pos.column},
+                    self.editor.renderer.getScrollTopRow());
             }
         }, 400);
     },
@@ -199,6 +220,9 @@ var Editor = React.createClass({
         var tab = TabsStore.tabs[this.props.eventKey];
         if (tab != null && this.editor){
             tab.script = this.editor.getValue();
+            var pos = this.editor.getCursorPosition();
+            tab.cursor = { row: pos.row, column: pos.column };
+            tab.scrollRow = this.editor.renderer.getScrollTopRow();
         }
     },
 

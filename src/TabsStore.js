@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -47,6 +48,8 @@ var Tab = function(id, connstr){
     this.newVersion = null;
     this.tmpScript = null;
     this.script = null; // current editor content, kept in sync for session autosave
+    this.cursor = null;    // {row, column} editor cursor, for session restore
+    this.scrollRow = null; // editor scroll position (top visible row), for session restore
 
     this.getTitle = function(){
         if (this.filename != null){
@@ -323,9 +326,11 @@ var _TabsStore = function(){
 
     // store the current editor content for a tab and (debounced) persist the
     // session so unsaved work is not lost on a crash/freeze/quit.
-    this.setScript = function(id, content){
+    this.setScript = function(id, content, cursor, scrollRow){
         if (id in this.tabs){
             this.tabs[id].script = content;
+            if (cursor !== undefined){ this.tabs[id].cursor = cursor; }
+            if (scrollRow !== undefined){ this.tabs[id].scrollRow = scrollRow; }
             SessionStore.scheduleSave(this);
         }
     };
@@ -488,6 +493,8 @@ var _TabsStore = function(){
             var id = self.newTab(t.connstr);
             if (t.filename != null){ self.tabs[id].filename = t.filename; }
             if (t.script != null){ self.tabs[id].script = t.script; }
+            if (t.cursor != null){ self.tabs[id].cursor = t.cursor; }
+            if (t.scrollRow != null){ self.tabs[id].scrollRow = t.scrollRow; }
         });
         var sel = session.selectedIndex;
         if (typeof sel === 'number' && sel >= 0 && sel < this.order.length){

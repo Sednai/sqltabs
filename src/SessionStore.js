@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -56,6 +57,8 @@ var SessionStore = {
                 connstr: (t.connstr != null ? t.connstr : null),
                 filename: (t.filename != null ? t.filename : null),
                 script: (t.script != null ? t.script : null),
+                cursor: (t.cursor != null ? t.cursor : null),
+                scrollRow: (t.scrollRow != null ? t.scrollRow : null),
             });
         });
         return { version: 1, selectedIndex: selectedIndex, tabs: tabs };
