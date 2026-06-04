@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -447,6 +448,9 @@ LIMIT 100;`;
         var records = <p> Records: <span className="ace_constant">{info.object.records}</span></p>;
         var size = <p> Size: <span className="ace_constant">{info.object.size}</span> </p>;
         var total_size = <p> Total Size: <span className="ace_constant">{info.object.total_size}</span></p>;
+        // hide the size lines when sizes are unavailable (e.g. distributed/pgxc tables)
+        if (info.object.size == null){ size = null; }
+        if (info.object.total_size == null){ total_size = null; }
 
         // view script
         var view_script = null;

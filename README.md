@@ -94,7 +94,7 @@ machines.
 |----------|------------|
 | Ubuntu / Debian | `.deb`, `.AppImage` |
 | Fedora / RHEL | `.rpm`, `.AppImage` |
-| macOS | `.dmg` |
+| macOS | `.dmg` (Intel x64 + Apple Silicon arm64) |
 | Windows | `.exe` (NSIS) |
 
 The macOS dmg is **unsigned** by default (first launch: right-click → *Open*).

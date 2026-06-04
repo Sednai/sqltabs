@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -283,7 +284,7 @@ if (process.platform == 'darwin'){
             },
             {type: 'separator'},
             {label: "New Tab",
-             accelerator: "Ctrl+N",
+             accelerator: "Ctrl+T",
              click: function(){Actions.select(0)},
             },
             {label: "Close Tab",

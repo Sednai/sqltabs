@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -95,6 +96,7 @@ AppDispatcher.register( function(payload) {
                 if (payload.filename){
                     TabsStore.openFile(payload.filename, tabid);
                     TabsStore.trigger('open-file-'+tabid, payload.filename);
+                    TabsStore.trigger('change'); // refresh the tab title now that the filename is set
                 }
             } else {
                 TabsStore.selectTab(payload.key);

@@ -1,3 +1,8 @@
+/*
+  Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
+*/
+
 function isElectron(){
     if (typeof(window) != "undefined"){
         return (window && window.process && window.process.type);

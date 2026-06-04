@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -29,6 +30,25 @@ var now = require("performance-now")
 // type parsing and hand back the raw text for every type (NULL is still passed through
 // as null by pg before the parser runs).
 var TEXT_TYPES = { getTypeParser: function(){ return function(val){ return val; }; } };
+
+// pg@8 connects through Node sockets, which throw a bare "AggregateError" when
+// every resolved address fails (e.g. localhost resolving to both ::1 and
+// 127.0.0.1, both refused). The UI shows error.toString(), so flatten it into a
+// readable message that names the actual failure(s) instead of "AggregateError".
+var flattenConnError = function(err){
+    if (err && err.name === 'AggregateError' && Array.isArray(err.errors) && err.errors.length > 0){
+        var seen = {};
+        var msgs = [];
+        err.errors.forEach(function(e){
+            var m = (e && e.message) ? e.message : String(e);
+            if (!seen[m]){ seen[m] = true; msgs.push(m); }
+        });
+        var flat = new Error('could not connect to server: ' + msgs.join('; '));
+        flat.code = err.errors[0] && err.errors[0].code;
+        return flat;
+    }
+    return err;
+};
 
 var Client = function(connstr, password, redshift){
     var self = this;
@@ -149,7 +169,7 @@ var Client = function(connstr, password, redshift){
             self.client.connect(function(err){
                 if (err){
                     self.isBusy = false;
-                    err_callback(err);
+                    err_callback(flattenConnError(err));
                 } else {
                     self.connected = true;
                     self._executeQuery(query, callback, err_callback)
@@ -210,39 +230,78 @@ var Response = function(query){
 
 // normalizes connect string: ensures protocol, and substitutes password, rewrite mistaken defaults etc
 var normalizeConnstr = function(connstr, password, redshift){
-    if (connstr){
-        var meta_start = connstr.indexOf('---'); // cut sqltabs extension of connect string
-        if (meta_start != -1){
-            connstr = connstr.substr(0, meta_start).trim();
+    if (!connstr){
+        return;
+    }
+
+    var meta_start = connstr.indexOf('---'); // cut sqltabs extension of connect string
+    if (meta_start != -1){
+        connstr = connstr.substr(0, meta_start).trim();
+    }
+    if (connstr.lastIndexOf('postgresql://', 0) !== 0 && connstr.lastIndexOf('postgres://', 0) !== 0 && connstr.lastIndexOf('redshift://', 0) !== 0) {
+        connstr = 'postgres://'+connstr;
+    }
+
+    // Build the pg config from Node's legacy url.parse, and DON'T hand a
+    // `postgres://` string to the WHATWG `new URL()` (which is what
+    // pg-connection-string and `new pg.Client(string)` use internally). For the
+    // non-special `postgres:` scheme, Chromium's URL implementation in the
+    // Electron renderer does not parse the authority -- host/port come back empty
+    // and the whole authority lands in the path, so pg falls back to its
+    // localhost:5432 defaults. Node's url.parse parses it correctly in the
+    // renderer, so we use that and assemble the config object ourselves.
+    var parsed = url.parse(connstr, true);
+
+    var dec = function(s){ try { return decodeURIComponent(s); } catch(e){ return s; } };
+
+    var user, pass;
+    if (parsed.auth != null){
+        var ci = parsed.auth.indexOf(':');
+        if (ci === -1){
+            user = parsed.auth;
+        } else {
+            user = parsed.auth.slice(0, ci);
+            pass = parsed.auth.slice(ci + 1);
         }
-        if (connstr.lastIndexOf('postgresql://', 0) !== 0 && connstr.lastIndexOf('postgres://', 0) !== 0 && connstr.lastIndexOf('redshift://', 0) !== 0) {
-            connstr = 'postgres://'+connstr;
-        }
-        var parsed = url.parse(connstr);
-        var params = parsed.query;
-        if (parsed.query == null){
-            params = "";
-            if (!redshift){ // redhsift doesn't support this
-                params = "application_name=sqltabs";
+    }
+
+    var config = {
+        host: parsed.hostname || undefined,
+        port: parsed.port || undefined,
+        user: (user != null && user !== '') ? dec(user) : undefined,
+        password: (password != null) ? password : (pass != null ? dec(pass) : undefined),
+        database: (parsed.pathname && parsed.pathname.length > 1) ? dec(parsed.pathname.slice(1)) : undefined,
+    };
+
+    // carry over connection parameters (application_name, sslmode, connect_timeout, ...)
+    if (parsed.query){
+        for (var k in parsed.query){
+            if (config[k] == null){
+                config[k] = parsed.query[k];
             }
         }
-        connstr = util.format('%s//%s%s%s%s?%s',
-            parsed.protocol,
-            (parsed.auth == null) ? '' : parsed.auth,
-            (password == null) ? '' : ':'+password,
-            (parsed.host == null) ? '' : '@'+parsed.host,
-            (parsed.path == null) ? '' : parsed.pathname,
-            params
-        );
-
-        connstr = decodeURIComponent(connstr).trim();
-
-        connstr = parseConnstr(connstr);
-        if (connstr.database == null){
-            connstr.database = connstr.user;
-        }
-        return connstr;
     }
+
+    // map libpq-style sslmode onto pg's `ssl` option
+    if (config.sslmode != null){
+        var mode = config.sslmode;
+        delete config.sslmode;
+        if (mode === 'disable'){
+            config.ssl = false;
+        } else if (mode === 'require' || mode === 'prefer' || mode === 'allow' || mode === 'no-verify'){
+            config.ssl = { rejectUnauthorized: false };
+        } else { // verify-ca / verify-full
+            config.ssl = true;
+        }
+    }
+
+    if (config.database == null){
+        config.database = config.user;
+    }
+    if (!redshift && config.application_name == null){ // redshift doesn't support this
+        config.application_name = 'sqltabs';
+    }
+    return config;
 };
 
 var decode_type = function(type_code){

@@ -47,7 +47,9 @@ jobs:
           node-version: 20
       - run: npm install
       - run: npm run compile
-      - run: npx electron-builder --mac dmg --publish never
+      # builds both Intel (x64) and Apple Silicon (arm64) dmgs (arches come from
+      # the mac.target config in package.json)
+      - run: npx electron-builder --mac --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
       - uses: actions/upload-artifact@v4
@@ -79,13 +81,20 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Create draft release with all installers
+      - name: Create or update release with all installers
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mapfile -t files < <(find artifacts -type f)
-          gh release create "$GITHUB_REF_NAME" \
-            --draft \
-            --generate-notes \
-            --title "$GITHUB_REF_NAME" \
-            "${files[@]}"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # release already exists (re-run on an existing tag): replace its assets,
+            # keeping the release's draft/published state and notes
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --generate-notes \
+              --title "$GITHUB_REF_NAME" \
+              "${files[@]}"
+          fi
