@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -69,7 +70,7 @@ var About = React.createClass({
                     <table className="about-table"><tr>
                     <td><img className="about-logo" src="logo.png"/></td>
                     <td> <p> SQL Tabs v{pkg.version} </p>
-                         <p> <a href="#" onClick={function(){Shell.openExternal('http:/github.com/Sednai/sqltabs');}}>Sednai fork of sqltabs</a></p>
+                         <p> <a href="#" onClick={function(){Shell.openExternal('https://github.com/Sednai/sqltabs');}}>Sednai fork of sqltabs</a></p>
                     </td>
                     </tr></table>
 
