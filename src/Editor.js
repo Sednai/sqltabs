@@ -53,7 +53,7 @@ var Editor = React.createClass({
             }
         }
 
-        this.completion_words = TabsStore.getCompletionWords();
+        this.completion_words = TabsStore.getCompletionWords(TabsStore.getConnstr(this.props.eventKey));
 
         return {
             theme: TabsStore.getEditorTheme(),
@@ -551,7 +551,7 @@ var Editor = React.createClass({
     },
 
     completionUpdateHandler: function(){
-        this.completion_words = TabsStore.getCompletionWords();
+        this.completion_words = TabsStore.getCompletionWords(TabsStore.getConnstr(this.props.eventKey));
     },
 
     adjustCompletion: function(){

@@ -1,6 +1,6 @@
 {
   "name": "sqltabs",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "author": "Aliaksandr Aliashkevich",
   "description": "SQL Tabs - a browser for databases",
   "repository": {

@@ -301,6 +301,11 @@ var normalizeConnstr = function(connstr, password, redshift){
     if (!redshift && config.application_name == null){ // redshift doesn't support this
         config.application_name = 'sqltabs';
     }
+    // don't hang indefinitely while establishing a connection to an unreachable
+    // or slow host (pg defaults to no timeout)
+    if (config.connectionTimeoutMillis == null){
+        config.connectionTimeoutMillis = 15000;
+    }
     return config;
 };
 

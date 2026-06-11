@@ -89,7 +89,7 @@ var _TabsStore = function(){
 
     this.connectionHistory = (Config.getConnHistory() || []);
     this.projects = (Config.getProjects() || []);
-    this.completion_words = [];
+    this.completion_words = {}; // keyed by connstr so dbs/users/schemas never mix
 
     this.getAll = function(){return this.tabs;};
 
@@ -412,12 +412,12 @@ var _TabsStore = function(){
         Config.saveProjects(this.projects);
     }
 
-    this.getCompletionWords = function(){
-        return this.completion_words;
+    this.getCompletionWords = function(connstr){
+        return (connstr && this.completion_words[connstr]) || [];
     }
 
-    this.updateCompletionWords = function(words){
-        this.completion_words = words;
+    this.updateCompletionWords = function(connstr, words){
+        if (connstr){ this.completion_words[connstr] = words; }
     }
 
     this.setEcho = function(boolean_echo){

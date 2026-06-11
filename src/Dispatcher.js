@@ -73,6 +73,12 @@ SignalsDispatcher.register(function(payload){
     return true;
 });
 
+// User-activity tracking for the autocomplete poll: refresh completion words only when
+// the user is actually working -- typing (keydown listener below) or activating a tab.
+var lastActivity = 0;
+var lastWordsPoll = 0;
+var markActivity = function(){ lastActivity = Date.now(); };
+
 AppDispatcher.register( function(payload) {
     var tab;
     var connstr;
@@ -89,6 +95,7 @@ AppDispatcher.register( function(payload) {
             TabsStore.trigger('change');
             break;
         case 'select-tab':
+            markActivity(); // activating a tab counts as user activity for the poll
             if (payload.key == 0) { // select tab 0 (+) means create a new tab
                 var tabid = TabsStore.newTab(payload.connstr);
                 TabsStore.tmpScript = payload.script;
@@ -402,9 +409,9 @@ var updateCompletionWords = function(){
 
     wordsUpdateInProgress = true;
     var pending = connstrs.length;
-    var done = function(words){
+    var done = function(cs, words){
         if (words){
-            TabsStore.updateCompletionWords(words);
+            TabsStore.updateCompletionWords(cs, words);
         }
         pending--;
         if (pending <= 0){
@@ -413,11 +420,23 @@ var updateCompletionWords = function(){
         }
     };
     connstrs.forEach(function(cs){
-        Executor.getCompletionWords(cs, done);
+        Executor.getCompletionWords(cs, function(words){ done(cs, words); });
     });
 }
-updateCompletionWords();
-setInterval(updateCompletionWords, 10000);
+// Typing is the other activity signal (a mouse-only session reading results never needs
+// a completion refresh and must not hit the cluster). When the user has typed or switched
+// tabs since the last poll, refresh at most every 15s; a fully idle app stays silent.
+if (typeof document !== 'undefined'){
+    document.addEventListener('keydown', markActivity, true);
+}
+var maybeUpdateCompletionWords = function(){
+    if (lastActivity <= lastWordsPoll){ return; } // no activity since last poll: skip
+    lastWordsPoll = Date.now();
+    updateCompletionWords();
+};
+
+updateCompletionWords();                              // initial populate at startup
+setInterval(maybeUpdateCompletionWords, 15000);
 
 module.exports = {
 AppDispatcher: AppDispatcher,

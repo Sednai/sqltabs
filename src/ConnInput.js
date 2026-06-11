@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2015  Aliaksandr Aliashkevich
+  Copyright (C) 2026  Sednai Sàrl
 
       This program is free software: you can redistribute it and/or modify
       it under the terms of the GNU General Public License as published by
@@ -46,10 +47,17 @@ var ConnInput = React.createClass({
     },
 
     storeChangedHandler: function() {
-        this.setState({
-            connstr: TabsStore.getConnstr(this.props.eventKey),
-            history: TabsStore.connectionHistory,
-        });
+        var update = { history: TabsStore.connectionHistory };
+        // Don't clobber what the user is currently typing in the connection bar:
+        // only sync the connstring from the store when the field isn't focused.
+        // Otherwise any background 'change' (e.g. after a failed connect, or a
+        // config reread) snaps the input back to the committed value mid-edit and
+        // forces the user to retype.
+        var input = ReactDOM.findDOMNode(this.refs.connInput);
+        if (input == null || document.activeElement !== input){
+            update.connstr = TabsStore.getConnstr(this.props.eventKey);
+        }
+        this.setState(update);
     },
 
     focusConnstr: function(){
