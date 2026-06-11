@@ -18,6 +18,7 @@
 
 var postgres = require('./connectors/postgres/Database.js');
 var alasql = require('./connectors/alasql/Database.js');
+var tap = require('./connectors/tap/Database.js'); // IVOA TAP / ADQL (e.g. ESA Gaia archive)
 // Non-PostgreSQL connectors (cassandra/mysql/mssql/firebase) were dropped during
 // the modernization to remove their unmaintained / native (grpc, ODBC) dependencies.
 // The connector source files remain under ./connectors/ but are no longer wired in.
@@ -61,6 +62,8 @@ var Executor = {
         } else if (connstr.indexOf('redshift://') == 0){
             db = postgres;
             db.redshift = true;
+        } else if (connstr.indexOf('tap://') == 0 || connstr.indexOf('taps://') == 0 || connstr.indexOf('gaia://') == 0){
+            db = tap; // IVOA TAP / ADQL service (e.g. ESA Gaia archive)
         }
         db.connstr = connstr;
         return db;
