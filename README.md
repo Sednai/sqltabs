@@ -13,6 +13,9 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 - Sednai **PG-XZ**
 - **PostgreSQL**
 - **Amazon Redshift** (use a `redshift://` connection string)
+- **IVOA TAP / ADQL** services such as the **ESA Gaia archive** — query
+  astronomical catalogs over HTTP with ADQL (use `gaia://`, `gaiapre://`,
+  `tap://` or `taps://`; see [Gaia / IVOA TAP](#gaia--ivoa-tap-archives) below)
 - **AlaSQL** — a small in-process SQL engine used for scratch/`about:` tabs
 
 ## Supported platforms
@@ -81,8 +84,8 @@ Windows (nsis `.exe` on `windows-latest`). Trigger it from the **Actions** tab
 **artifacts**, or push a version tag to also publish a release:
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 A tagged run gathers every installer and creates a **draft GitHub Release** with
@@ -117,6 +120,59 @@ redshift://user:password@host:5439/dbname
   (uses `~/.ssh/id_rsa`, or `?identity_file=...` on the ssh part).
 - Passwords can be saved (encrypted) in `~/.sqltabs/config.json`.
 
+## Gaia / IVOA TAP archives
+
+Besides SQL databases, SQL Tabs can query any
+[IVOA **TAP**](https://www.ivoa.net/documents/TAP/) (Table Access Protocol)
+service that speaks **ADQL** over HTTP — most notably the **ESA Gaia archive**.
+Results are fetched as CSV so values arrive as exact text, which matters because
+Gaia `source_id` is a 64-bit integer that JSON's doubles would corrupt.
+
+### Connection strings
+
+| Connection string | Endpoint |
+|-------------------|----------|
+| `gaia://` | ESA Gaia archive (`gea.esac.esa.int`), anonymous |
+| `gaia://<username>` | ESA Gaia archive, **authenticated** (password prompted) |
+| `gaiapre://` / `gaiapre://<username>` | ESA Gaia **pre-release** archive (`geapre.esac.esa.int`) |
+| `tap://host/path`, `taps://host/path` | any IVOA TAP service (optionally `tap://user@host/path`) |
+
+`gaia://` and `gaiapre://` are shortcuts for the ESA endpoints; for any other
+archive give the full host and TAP path, e.g.
+`taps://geapre.esac.esa.int/tap-server/tap`.
+
+```adql
+--- a few bright Gaia DR3 sources
+SELECT TOP 10 source_id, ra, dec, phot_g_mean_mag
+FROM gaiadr3.gaia_source
+WHERE phot_g_mean_mag < 10
+ORDER BY phot_g_mean_mag
+```
+
+### Authentication
+
+Authentication mirrors the Postgres flow: put the username in the connection
+string, and the app prompts for the password (stored encrypted in
+`~/.sqltabs/config.json`, never in the repo). It POSTs to the service's `/login`
+endpoint for a session cookie, which is attached to every request. An
+authenticated session also exposes your personal `user_<name>` tables (saved /
+uploaded results) in `TAP_SCHEMA`.
+
+### Notes specific to ADQL
+
+- **Top-N** uses `SELECT TOP n ...` (not `LIMIT`).
+- **String literals use single quotes** — `WHERE flag = 'false'`. Double quotes
+  mean *identifiers* in ADQL, so `"false"` is read as a column name.
+- **`Ctrl/Cmd+I`** on a table name shows its columns (name, datatype, unit,
+  description) from `TAP_SCHEMA`, falling back to a `SELECT TOP 0` probe for
+  tables `TAP_SCHEMA` does not describe (e.g. your own `user_<name>` tables).
+- **Long-running queries:** the synchronous endpoint is aborted at the service's
+  own short limit (an expensive `COUNT`/`JOIN` returns "Job timeout/aborted.").
+  Prefix the block with [`--- async`](#sql-documents-block-directives) to run it
+  through the TAP **asynchronous** (`/async`) endpoint instead, which queues the
+  job server-side with a much longer allowance. `Ctrl/Cmd+B` (Break Execution)
+  aborts a running async job.
+
 ## SQL documents: block directives
 
 A script is split into blocks separated by lines beginning with `---`. The text
@@ -129,6 +185,12 @@ after `---` on that line selects how the block's result is rendered:
 | `--- crosstable` | a pivoted cross-table |
 | `--- csv` | raw comma-separated values |
 | `--- hidden` | nothing (run for side effects) |
+
+For TAP/ADQL connections, an `--- async` prefix changes **how the block is
+executed** (via the asynchronous `/async` endpoint) rather than how it is
+rendered, so it composes with a render directive — e.g. `--- async chart line`
+runs the query asynchronously and draws a chart. See
+[Gaia / IVOA TAP](#gaia--ivoa-tap-archives).
 
 You can also embed Markdown anywhere with `/** ... **/` blocks (rendered as
 documentation above/below the result).
