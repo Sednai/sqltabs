@@ -1,7 +1,7 @@
 {
   "name": "sqltabs",
-  "version": "1.2.0",
-  "author": "Aliaksandr Aliashkevich",
+  "version": "1.3.0",
+  "author": "Sednai Sàrl <sqltabs@sedn.ai>",
   "description": "SQL Tabs - a browser for databases",
   "repository": {
     "type": "git",
