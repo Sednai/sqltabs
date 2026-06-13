@@ -88,6 +88,7 @@ var _TabsStore = function(){
     this.auto_completion = (Config.getAutoCompletion() || true);
 
     this.connectionHistory = (Config.getConnHistory() || []);
+    this.fileHistory = (Config.getFileHistory() || []);
     this.projects = (Config.getProjects() || []);
     this.completion_words = {}; // keyed by connstr so dbs/users/schemas never mix
 
@@ -229,8 +230,16 @@ var _TabsStore = function(){
     }
 
     this.setConnection = function(id, connstr){
+        // normalize once, here, so the tab connstr, the history entry and the secret
+        // lookup key are always identical -- a stray surrounding space must never fork
+        // a connection into a second history entry with a mismatched password.
+        if (typeof connstr === 'string'){ connstr = connstr.trim(); }
         this.tabs[id].connstr = connstr;
         this.tabs[id].connector_type = Executor.getConnector(connstr).connector_type;
+        // load the password saved for THIS connstr (if any), so selecting a saved
+        // connection connects with its own credentials -- not whatever password was
+        // left over from the previously selected connection.
+        this.tabs[id].password = Config.getSecret(connstr);
 
         if (connstr == null || connstr == ""){ // don't track empty connstr
             return;
@@ -274,10 +283,6 @@ var _TabsStore = function(){
             }
         }
     };
-
-    this.resetPassword = function(id){
-        this.tabs[id].password = null;
-    }
 
     this.setResult = function(id, result){
         if (typeof(this.tabs[id]) != 'undefined'){
@@ -376,10 +381,19 @@ var _TabsStore = function(){
         return this.historyItem;
     }
 
+    this.recordFileAccess = function(filename){
+        if (!filename){ return; }
+        this.fileHistory = this.fileHistory.filter(function(f){ return f != filename; });
+        this.fileHistory.unshift(filename);
+        if (this.fileHistory.length > 20){ this.fileHistory = this.fileHistory.slice(0, 20); }
+        Config.saveFileHistory(this.fileHistory);
+    };
+
     this.rereadConfig = function(){
         this.theme = (Config.getTheme() || 'dark');
         this.mode = (Config.getMode() || 'classic');
         this.connectionHistory = (Config.getConnHistory() || []);
+        this.fileHistory = (Config.getFileHistory() || []);
     };
 
     this.setCloudDoc = function(docid){
@@ -446,15 +460,20 @@ var _TabsStore = function(){
                         field_names.push('"' + field.name + '"');
                     });
                     fs.writeSync(file, field_names.join()+EOL);
-                    // write records
+                    // write records. Quote a field only when it actually needs it
+                    // (contains a comma, double-quote, or newline); numbers and plain
+                    // strings go out unquoted. Type-based quoting isn't possible here --
+                    // the TAP connector tags every field as 'string' and postgres returns
+                    // all values as text -- so we key off the value's content instead.
                     dataset.data.forEach(function(record){
                         var values = []
                         record.forEach(function(col){
-                            if (col != null){
-                                var escaped = col.replace(/"/g, '""');
-                                values.push('"' + escaped + '"');
-                            } else {
+                            if (col == null){
                                 values.push("NULL");
+                            } else if (/[",\r\n]/.test(col)){
+                                values.push('"' + col.replace(/"/g, '""') + '"');
+                            } else {
+                                values.push(col);
                             }
                         });
                         fs.writeSync(file, values.join()+EOL);

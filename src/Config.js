@@ -78,6 +78,28 @@ var Conf = {
         }
     },
 
+    saveLastUsedDir: function(dir){
+        config.last_used_dir = dir;
+        this.saveSync();
+    },
+
+    getLastUsedDir: function(){
+        return (typeof(config.last_used_dir) != 'undefined') ? config.last_used_dir : null;
+    },
+
+    saveFileHistory: function(history){
+        config.file_history = history;
+        this.saveSync();
+    },
+
+    getFileHistory: function(){
+        if (typeof(config.file_history) != 'undefined'){
+            return config.file_history.filter(function(item){return item != null && item != "";});
+        } else {
+            return [];
+        }
+    },
+
     getFontSize: function(){
         return config.font_size;
     },

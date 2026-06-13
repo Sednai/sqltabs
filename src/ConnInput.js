@@ -69,12 +69,18 @@ var ConnInput = React.createClass({
     connectionSubmitHandler: function(e){
         e.preventDefault();
         e.stopPropagation();
-        this.setState({hilight: -1});
-        TabActions.setConnection(this.props.eventKey, this.state.connstr);
+        // trim so a stray trailing/leading space can't fork the connstr into a
+        // second history entry (and a mismatched password/session key).
+        var connstr = (this.state.connstr || '').trim();
+        this.setState({hilight: -1, connstr: connstr});
+        TabActions.setConnection(this.props.eventKey, connstr);
     },
 
     connectionChangeHandler: function(e){
-        this.setState({connstr: e.target.value});
+        // Typing clears any active dropdown highlight (set by arrow keys OR mouse hover),
+        // so pressing Enter connects to what was typed -- not to a stale/hovered history
+        // item (which previously caused a typed connstr to silently connect elsewhere).
+        this.setState({connstr: e.target.value, hilight: -1});
     },
 
     focusHandler: function(){
@@ -147,21 +153,31 @@ var ConnInput = React.createClass({
             e.preventDefault();
             e.stopPropagation();
         } else if (e.keyCode == 13) { // enter
+            // Use the highlighted history item only when the user actually arrow-navigated
+            // to it; otherwise connect to exactly what is typed. Connect here (trimmed) and
+            // preventDefault so the form's onSubmit doesn't also fire with stale state.
             if (this.state.hilight > -1){
-                connstr = TabsStore.connectionHistory[this.state.hilight]
+                connstr = TabsStore.connectionHistory[this.state.hilight];
             } else {
                 connstr = this.state.connstr;
             }
-                this.setState({
-                    active: false,
-                    hilight: this.state.hilight,
-                    connstr: connstr,
-                });
+            connstr = (connstr || '').trim();
+            this.setState({
+                active: false,
+                hilight: -1,
+                connstr: connstr,
+            });
+            TabActions.setConnection(this.props.eventKey, connstr);
+            e.preventDefault();
+            e.stopPropagation();
         }
     },
 
     itemMouseOverHandler: function(e){
-        var idx = e.target.getAttribute("data-idx");
+        // getAttribute returns a string; keep hilight numeric so the arrow-key
+        // handler's "hilight + 1" stays arithmetic instead of string concatenation
+        // (which would index connectionHistory["31"] -> undefined).
+        var idx = parseInt(e.target.getAttribute("data-idx"), 10);
         this.setState({hilight: idx});
     },
 

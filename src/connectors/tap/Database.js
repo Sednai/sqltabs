@@ -23,7 +23,18 @@
 // Connection strings:
 //   gaia://                       -> ESA Gaia archive TAP, anonymous
 //   gaia://<username>             -> ESA Gaia archive TAP, authenticated (password prompted)
+//   gaiapre://[<username>]        -> ESA Gaia pre-release archive (geapre.esac.esa.int)
 //   tap://host/path , taps://...  -> any IVOA TAP service (optionally tap://user@host/path)
+//
+// Sync vs async: by default a query goes to /sync, which the service aborts at its own
+// short server-side limit (expensive COUNT/JOIN -> "Job timeout/aborted." from the
+// service). Prefix the block marker with `async` to run it via the UWS /async endpoint
+// instead -- the job is queued server-side with a much longer allowance and we poll for
+// completion. `async` is an EXECUTION directive and composes with the SqlDoc RENDER
+// markers, so you can mix them:
+//   --- async                     run via /async, render as a table
+//   --- async chart line x y       run via /async, render as a chart
+// (cancelling the query aborts the job server-side via PHASE=ABORT).
 //
 // Authentication mirrors the Postgres flow: the connstr carries the username, the app
 // prompts for the password (stored encrypted in ~/.sqltabs/config.json, never in the repo),
@@ -39,14 +50,22 @@ var Words = require('./keywords.js');
 
 var TAP_SYNC_TIMEOUT = 120000;            // abort a sync request after 2 min
 var InFlight = {};                        // id -> http request, so cancelQuery(id) can abort
+var AsyncJobs = {};                        // id -> {cancelled, base, jobUrl, cookie, timer} for /async cancellation
 var Sessions = {};                        // "base|user" -> "JSESSIONID=..." session cookie
 var SchemaWords = {};                     // "base|user" -> cached completion words
+
+var ASYNC_POLL_MS = 1500;                 // delay between UWS phase polls
+var ASYNC_MAX_MS = 1800000;               // give up after 30 min of polling
 
 // Parse a connection string into { user, base } where base is the TAP endpoint root.
 function parseConn(connstr){
     var s = (connstr || '').split('---')[0].trim(); // drop any "--- alias" suffix
     var user = null, base;
-    if (s.indexOf('gaia://') === 0){
+    if (s.indexOf('gaiapre://') === 0){              // pre-release archive shortcut
+        var restp = s.slice(10);
+        if (restp){ user = restp.split('/')[0].split('@')[0] || null; }
+        base = 'https://geapre.esac.esa.int/tap-server/tap';
+    } else if (s.indexOf('gaia://') === 0){
         var rest = s.slice(7);
         if (rest){ user = rest.split('/')[0].split('@')[0] || null; }
         base = 'https://gea.esac.esa.int/tap-server/tap';
@@ -96,6 +115,43 @@ function errorFromBody(status, body){
     return 'TAP request failed (HTTP ' + status + ')';
 }
 
+// Decode the handful of XML entities that appear in VOTABLE attribute/description text.
+function unescapeXml(s){
+    return String(s == null ? '' : s)
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&');
+}
+
+// Parse the <FIELD> metadata from a VOTABLE document into column descriptors. Each FIELD
+// carries name + datatype, and optionally unit and a nested <DESCRIPTION>. This is how we
+// recover column TYPES for tables that TAP_SCHEMA does not describe (e.g. user_<name>).
+function fieldsFromVOTable(xml){
+    var columns = [];
+    var re = /<FIELD\b([^>]*?)(\/>|>([\s\S]*?)<\/FIELD>)/g;
+    var m;
+    while ((m = re.exec(xml || '')) !== null){
+        var attrs = m[1];
+        var inner = m[3] || '';
+        var attr = function(name){
+            var a = new RegExp(name + '\\s*=\\s*"([^"]*)"').exec(attrs);
+            return a ? unescapeXml(a[1]) : '';
+        };
+        var name = attr('name');
+        if (!name){ continue; }
+        var datatype = attr('datatype');
+        var arraysize = attr('arraysize');
+        var unit = attr('unit');
+        var dm = /<DESCRIPTION>([\s\S]*?)<\/DESCRIPTION>/.exec(inner);
+        var descr = dm ? unescapeXml(dm[1]).trim() : '';
+        if (unit){ descr = '[' + unit + '] ' + descr; }
+        // a char column with arraysize is a variable-length string; surface its length
+        var len = (datatype === 'char' && arraysize && arraysize !== '*' && (+arraysize) > 1) ? arraysize : '-1';
+        columns.push({ name: name, type: datatype || '', not_null: 'f', max_length: len, default_value: null, description: descr || null });
+    }
+    return columns;
+}
+
 function encodeParams(params){
     return Object.keys(params).map(function(k){ return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); }).join('&');
 }
@@ -128,6 +184,26 @@ function httpPost(urlStr, params, cookie, id, onResp, onErr){
     req.setTimeout(TAP_SYNC_TIMEOUT, function(){ req.destroy(new Error('TAP request timed out after ' + (TAP_SYNC_TIMEOUT / 1000) + 's')); });
     if (id != null){ InFlight[id] = req; }
     req.write(body);
+    req.end();
+}
+
+// Low-level GET; used to poll a UWS job phase and fetch its results. Does NOT register
+// in InFlight (async polling cancellation is handled at the job level, not the socket).
+// onResp(status, headers, text) / onErr(message).
+function httpGet(urlStr, cookie, onResp, onErr){
+    var u = url.parse(urlStr);
+    var lib = (u.protocol === 'http:') ? http : https;
+    var headers = { 'Accept': 'text/plain, text/csv, */*' };
+    if (cookie){ headers['Cookie'] = cookie; }
+    var settled = false;
+    var finish = function(fn, a, b, c){ if (settled){ return; } settled = true; fn(a, b, c); };
+    var req = lib.request({ method: 'GET', hostname: u.hostname, port: u.port, path: u.path, headers: headers }, function(res){
+        var chunks = [];
+        res.on('data', function(d){ chunks.push(d); });
+        res.on('end', function(){ finish(onResp, res.statusCode, res.headers, Buffer.concat(chunks).toString('utf8')); });
+    });
+    req.on('error', function(e){ finish(onErr, e.message); });
+    req.setTimeout(TAP_SYNC_TIMEOUT, function(){ req.destroy(new Error('TAP request timed out after ' + (TAP_SYNC_TIMEOUT / 1000) + 's')); });
     req.end();
 }
 
@@ -180,20 +256,25 @@ function ensureSession(connstr, password, ok, fail){
     ok(null);                                               // no session yet, no password: best-effort anonymous
 }
 
-// POST an ADQL query to /sync. ok(csvText) / fail(message). Re-logs-in once on a 401 when a
+// POST an ADQL query to /sync. ok(bodyText) / fail(message). Re-logs-in once on a 401 when a
 // password is available (session expired); id (optional) makes the request cancellable.
-function tapSync(connstr, query, password, id, ok, fail){
+// format defaults to 'csv'; pass 'votable' to get the typed VOTABLE document (the body is
+// then XML, so success is distinguished from an error by the absence of the ERROR INFO).
+function tapSync(connstr, query, password, id, ok, fail, format){
     var c = parseConn(connstr);
+    var fmt = format || 'csv';
     var run = function(cookie, allowRetry){
-        httpPost(c.base + '/sync', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: 'csv', QUERY: query }, cookie, id,
+        httpPost(c.base + '/sync', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: fmt, QUERY: query }, cookie, id,
             function(status, headers, text){
                 if (status === 401 && c.user && password && allowRetry){ // session expired -> re-login once
                     delete Sessions[sessionKey(c)];
                     tapLogin(connstr, password, function(fresh){ run(fresh, false); }, function(e){ fail(e.msg || 'login failed'); });
                     return;
                 }
-                var looksXml = /^\s*</.test(text); // TAP errors come back as a VOTABLE document
-                if (status >= 200 && status < 300 && !looksXml){ ok(text); }
+                var isError = /QUERY_STATUS"\s+value="ERROR"/.test(text); // VOTABLE error marker
+                // For CSV a successful body is non-XML; a VOTABLE body is XML by design.
+                var bad = (fmt === 'votable') ? isError : (/^\s*</.test(text) || isError);
+                if (status >= 200 && status < 300 && !bad){ ok(text); }
                 else { fail(errorFromBody(status, text)); }
             },
             function(e){ fail(e); });
@@ -201,12 +282,108 @@ function tapSync(connstr, query, password, id, ok, fail){
     ensureSession(connstr, password, function(cookie){ run(cookie, true); }, function(e){ fail(e.msg || 'login failed'); });
 }
 
+// The UWS phase is reported either as a bare word (GET .../phase) or inside the job's
+// XML document (<uws:phase>...</uws:phase>). Accept both.
+function parsePhase(text){
+    var t = (text || '').trim();
+    var m = /<(?:uws:)?phase>\s*([A-Z]+)\s*<\/(?:uws:)?phase>/.exec(t);
+    if (m){ return m[1]; }
+    if (/^[A-Z]+$/.test(t)){ return t; }
+    return null;
+}
+
+// Run an ADQL query via the UWS /async endpoint: create the job, start it, poll its phase
+// until it reaches a terminal state, then fetch the CSV result. ok(csvText) / fail(message).
+// The job is registered in AsyncJobs[id] so cancelQuery(id) can ABORT it server-side.
+function tapAsync(connstr, query, password, id, ok, fail, triedRelogin){
+    var c = parseConn(connstr);
+    var startTime = performance.now();
+
+    var settled = false;
+    var done = function(fn, arg){
+        if (settled){ return; }
+        settled = true;
+        var job = AsyncJobs[id];
+        if (job && job.timer){ clearTimeout(job.timer); }
+        if (id != null){ delete AsyncJobs[id]; }
+        fn(arg);
+    };
+
+    var withSession = function(next){
+        ensureSession(connstr, password, function(cookie){ next(cookie); }, function(e){ done(fail, e.msg || 'login failed'); });
+    };
+
+    withSession(function(cookie){
+        if (settled){ return; } // cancelled during login
+        AsyncJobs[id] = {
+            base: c.base, jobUrl: null, cookie: cookie, timer: null,
+            // cancelQuery calls this so an in-flight poll/result GET resolving after the
+            // cancel can't still fire ok()/fail() -- it flips this closure's settled flag.
+            abort: function(){ settled = true; }
+        };
+
+        // PHASE=RUN creates the job already running, so no separate start POST is needed.
+        // The 303 redirect's Location header carries the job URL.
+        httpPost(c.base + '/async', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: 'csv', PHASE: 'RUN', QUERY: query }, cookie, null,
+            function(status, headers, text){
+                if (status === 401 && c.user && password && !triedRelogin){ // session expired -> re-login once, retry job
+                    delete Sessions[sessionKey(c)];
+                    settled = true;                 // make this invocation inert
+                    if (id != null){ delete AsyncJobs[id]; }
+                    tapAsync(connstr, query, password, id, ok, fail, true);
+                    return;
+                }
+                if (status < 200 || status >= 400){ done(fail, errorFromBody(status, text)); return; }
+                var loc = headers['location'];
+                if (!loc){ done(fail, 'async job created but no job URL was returned'); return; }
+                var jobUrl = loc.indexOf('http') === 0 ? loc : (url.parse(c.base).protocol + '//' + url.parse(c.base).host + loc);
+                if (AsyncJobs[id]){ AsyncJobs[id].jobUrl = jobUrl; }
+                poll(jobUrl, cookie);
+            },
+            function(e){ done(fail, e); });
+    });
+
+    function poll(jobUrl, cookie){
+        if (settled){ return; }
+        if (performance.now() - startTime > ASYNC_MAX_MS){ done(fail, 'async job did not finish within ' + (ASYNC_MAX_MS / 60000) + ' min'); return; }
+        httpGet(jobUrl + '/phase', cookie,
+            function(status, headers, text){
+                if (settled){ return; }
+                var phase = parsePhase(text);
+                if (phase === 'COMPLETED'){ fetchResult(jobUrl, cookie); return; }
+                if (phase === 'ERROR'){ fetchError(jobUrl, cookie); return; }
+                if (phase === 'ABORTED'){ done(fail, 'async job aborted'); return; }
+                // PENDING / QUEUED / EXECUTING / UNKNOWN -> keep polling
+                if (AsyncJobs[id]){ AsyncJobs[id].timer = setTimeout(function(){ poll(jobUrl, cookie); }, ASYNC_POLL_MS); }
+            },
+            function(e){ done(fail, e); });
+    }
+
+    function fetchResult(jobUrl, cookie){
+        httpGet(jobUrl + '/results/result', cookie,
+            function(status, headers, text){
+                var looksXml = /^\s*</.test(text);
+                if (status >= 200 && status < 300 && !looksXml){ done(ok, text); }
+                else { done(fail, errorFromBody(status, text)); }
+            },
+            function(e){ done(fail, e); });
+    }
+
+    function fetchError(jobUrl, cookie){
+        httpGet(jobUrl + '/error', cookie,
+            function(status, headers, text){ done(fail, errorFromBody(status, text) || 'async job failed'); },
+            function(e){ done(fail, e); });
+    }
+}
+
 var Response = function(query){
     this.connector_type = "tap";
-    this.query = query;
+    // default to '' so the renderer's query.replace(...)/match(...) calls are safe even
+    // for a query-less probe Response (e.g. the one returned from testConnection).
+    this.query = query || '';
     this.datasets = [];
     this.start_time = performance.now();
-    this.duration = null;
+    this.duration = 0; // 0 (not null) so a probe Response that never calls finish() shows "0 ms", not "NaN ms"
     var self = this;
     this.finish = function(){ self.duration = Math.round((performance.now() - self.start_time) * 1000) / 1000; };
 };
@@ -227,10 +404,13 @@ var Database = {
 
     testConnection: function(id, connstr, password, callback, ask_password_callback, err_callback){
         var c = parseConn(connstr);
+        // callback expects an ARRAY of responses (like the postgres connector's
+        // `callback(id, [result])`); the result store renders it with data.forEach,
+        // so a bare Response object would throw "data.forEach is not a function".
         if (c.user){
             if (!password){ ask_password_callback(id, 'Login required for ' + c.user); return; }
             tapLogin(connstr, password,
-                function(){ callback(id, new Response()); },
+                function(){ callback(id, [new Response()]); },
                 function(e){
                     if (e.status === 401){ ask_password_callback(id, 'Bad credentials for ' + c.user); }
                     else { err_callback(id, e.msg || 'login failed'); }
@@ -238,14 +418,23 @@ var Database = {
         } else {
             // anonymous: a tiny ADQL probe confirms the endpoint actually speaks TAP/ADQL
             tapSync(connstr, 'SELECT TOP 1 table_name FROM tap_schema.tables', undefined, null,
-                function(){ callback(id, new Response()); },
+                function(){ callback(id, [new Response()]); },
                 function(msg){ err_callback(id, msg); });
         }
     },
 
     runQuery: function(id, connstr, password, query, callback, err_callback){
-        var response = new Response(query);
-        tapSync(connstr, query, password, id,
+        // `async` is an execution directive: detect it on the leading `--- async ...`
+        // marker and strip just that token, leaving any following render marker
+        // (chart/csv/...) intact so SqlDoc still sees e.g. "--- chart line x y".
+        // The service ignores the `---` line itself (-- is an ADQL line comment), so we
+        // hand the connector the original block and only normalize Response.query (which
+        // is what SqlDoc inspects to pick the renderer).
+        var isAsync = /^\s*---\s+async\b/.test(query);
+        var renderQuery = isAsync ? query.replace(/^(\s*---\s+)async\s*/, '$1') : query;
+        var run = isAsync ? tapAsync : tapSync;
+        var response = new Response(renderQuery);
+        run(connstr, query, password, id,
             function(csvText){
                 response.finish();
                 response.datasets.push(csvDataset(csvText));
@@ -257,6 +446,16 @@ var Database = {
     cancelQuery: function(id){
         var req = InFlight[id];
         if (req){ delete InFlight[id]; try { req.destroy(new Error('cancelled')); } catch (e){ /* already gone */ } }
+        // For an async job, abort it server-side (UWS PHASE=ABORT) and stop polling.
+        var job = AsyncJobs[id];
+        if (job){
+            if (job.abort){ job.abort(); } // make the tapAsync closure inert (no late callback)
+            if (job.timer){ clearTimeout(job.timer); }
+            delete AsyncJobs[id];
+            if (job.jobUrl){
+                httpPost(job.jobUrl + '/phase', { PHASE: 'ABORT' }, job.cookie, null, function(){}, function(){});
+            }
+        }
     },
 
     runBlocks: function(id, connstr, password, blocks, callback, err_callback){
@@ -280,13 +479,45 @@ var Database = {
             err_callback(id, 'Put the cursor on a table name (e.g. gaiadr3.gaia_source) and press Ctrl/Cmd+I');
             return;
         }
+        var emit = function(columns){
+            callback(id, {
+                object_type: 'relation',
+                object_name: tbl,
+                object: {
+                    relkind: 'r', columns: columns,
+                    pk: null, check_constraints: null, foreign_keys: null,
+                    indexes: null, triggers: null, records: null, size: null, total_size: null
+                }
+            });
+        };
+
+        // Fallback for tables not described in TAP_SCHEMA (e.g. uploaded user_<name>
+        // tables): a TOP 0 VOTABLE probe returns the <FIELD> metadata (name, datatype,
+        // unit, description) for every column without fetching any rows.
+        var probeColumns = function(){
+            tapSync(connstr, 'SELECT TOP 0 * FROM ' + tbl, password, null,
+                function(xml){
+                    var columns = fieldsFromVOTable(xml);
+                    if (columns.length === 0){
+                        callback(id, { object_type: 'relation', object: null, object_name: tbl });
+                        return;
+                    }
+                    emit(columns);
+                },
+                // Surface the real reason (auth, unknown table, server error) instead of a
+                // generic "not found" -- a user table that needs a login but is being probed
+                // anonymously, or a genuine query error, should be visible.
+                function(msg){ err_callback(id, msg); },
+                'votable');
+        };
+
         var q = "SELECT column_name, datatype, size, unit, description FROM tap_schema.columns " +
                 "WHERE table_name = '" + tbl.replace(/'/g, "''") + "' ORDER BY column_index";
         tapSync(connstr, q, password, null,
             function(csvText){
                 var rows = parseCSV(csvText);
-                if (rows.length <= 1){ // header only -> unknown table
-                    callback(id, { object_type: 'relation', object: null, object_name: tbl });
+                if (rows.length <= 1){ // not in TAP_SCHEMA -> probe the table directly
+                    probeColumns();
                     return;
                 }
                 var columns = [];
@@ -297,15 +528,7 @@ var Database = {
                     var len = (r[1] === 'char' && r[2] && (+r[2]) > 1) ? r[2] : '-1';
                     columns.push({ name: r[0], type: r[1], not_null: 'f', max_length: len, default_value: null, description: descr || null });
                 }
-                callback(id, {
-                    object_type: 'relation',
-                    object_name: tbl,
-                    object: {
-                        relkind: 'r', columns: columns,
-                        pk: null, check_constraints: null, foreign_keys: null,
-                        indexes: null, triggers: null, records: null, size: null, total_size: null
-                    }
-                });
+                emit(columns);
             },
             function(msg){ err_callback(id, msg); });
     },
@@ -327,9 +550,9 @@ var Database = {
         };
         // table names then column names from TAP_SCHEMA (authenticated if a session exists,
         // so the user's own user_<name> tables are included); cache the merged list.
-        tapSync(connstr, 'SELECT table_name FROM tap_schema.tables', undefined, null, function(t1){
+        tapSync(connstr, 'SELECT table_name FROM tap_schema.tables ORDER BY table_name', undefined, null, function(t1){
             addNames(t1);
-            tapSync(connstr, 'SELECT DISTINCT column_name FROM tap_schema.columns', undefined, null, function(t2){
+            tapSync(connstr, 'SELECT DISTINCT column_name FROM tap_schema.columns ORDER BY column_name', undefined, null, function(t2){
                 addNames(t2);
                 SchemaWords[key] = words;
                 callback(words);

@@ -186,14 +186,15 @@ AppDispatcher.register( function(payload) {
             break;
 
         case 'set-connection':
+            // setConnection loads the password saved for payload.value (if any); don't
+            // reset it here or a saved connection would always connect with no password.
             TabsStore.setConnection(payload.key, payload.value);
-            TabsStore.resetPassword(payload.key);
             Config.saveConnHistory(TabsStore.connectionHistory);
             TabsStore.trigger('change');
             Executor.testConnection(
                 payload.key,
                 payload.value,
-                TabsStore.tabs[TabsStore.selectedTab].password,
+                TabsStore.getPassword(payload.key), // password of the tab being connected, not the selected one
                 payload.callback,
                 function(){
                     TabsStore.trigger('ask-password');
@@ -243,15 +244,19 @@ AppDispatcher.register( function(payload) {
 
         case 'open-file':
             TabsStore.openFile(payload.filename);
+            TabsStore.recordFileAccess(payload.filename);
             TabsStore.trigger('open-file-'+TabsStore.selectedTab, payload.filename);
             TabsStore.trigger('change');
+            TabsStore.trigger('rebuild-menu');
             break;
 
 
         case 'save-file':
             TabsStore.saveFile(payload.filename);
+            TabsStore.recordFileAccess(payload.filename);
             TabsStore.trigger('save-file-'+TabsStore.selectedTab, payload.filename);
             TabsStore.trigger('change');
+            TabsStore.trigger('rebuild-menu');
             break;
 
         case 'close-file':

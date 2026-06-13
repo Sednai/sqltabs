@@ -544,7 +544,7 @@ var SqlDoc = React.createClass({
 
             if(rownum_column){
                 // render the rownum column?
-                out_fields.unshift(<th className="table-column-header" onClick={function(){
+                out_fields.unshift(<th key="rownum_header" className="table-column-header" onClick={function(){
                         self.setState({show_datatypes: !self.state.show_datatypes});
                     }}>#</th>);
             }
@@ -557,7 +557,7 @@ var SqlDoc = React.createClass({
 
             if(rownum_column){
                 // should render the rownum column?
-                floating_fields.unshift(<div className="floating-field">#</div>);
+                floating_fields.unshift(<div className="floating-field" key="rownum_field">#</div>);
             }
             this.tables_headers[dsid] = floating_fields;
         }
@@ -716,7 +716,7 @@ var SqlDoc = React.createClass({
                 if (val == null){
                     row += '<span class="csv-value">NULL</span>';
                 } else {
-                    row += '<span class="csv-value">"' + val.replace('"', '""') + '"</span>';
+                    row += '<span class="csv-value">"' + val.replace(/"/g, '""') + '"</span>';
                 }
                 if (j != dataset.data[i].length-1){
                     row += '<span class="csv-separator">,</span>';

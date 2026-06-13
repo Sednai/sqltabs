@@ -16,6 +16,14 @@
       along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// Electron throws "prompt() is and will not be supported" whenever the bundled Ace
+// editor (brace) invokes window.prompt for its gotoline keybinding -- which fired on
+// stray keystrokes and spammed the console. Neutralize it with a no-op so the editor
+// keybinding degrades silently instead of throwing on every press.
+if (typeof window !== 'undefined'){
+    window.prompt = function(){ return null; };
+}
+
 var React = require('react');
 var ReactDOM = require('react-dom');
 var PasswordDialog = require('./PasswordDialog');

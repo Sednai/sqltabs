@@ -136,6 +136,23 @@ var Editor = React.createClass({
             readOnly: true
         });
 
+        // Ctrl/Cmd+L should jump to the connection bar. Ace binds Ctrl-L to its
+        // "gotoline" command (which calls the unsupported window.prompt), so it would
+        // otherwise swallow the key while the editor has focus. Replace it with our
+        // goto-connstr action.
+        this.editor.commands.removeCommand('gotoline');
+        this.editor.commands.addCommand({
+            name: "goto connstr",
+            bindKey: {
+                win: "Ctrl-L",
+                mac: "Command-L"
+            },
+            exec: function() {
+                Actions.gotoConnstr();
+            },
+            readOnly: true
+        });
+
         this.editor.getSelectedText = function() {
             return this.session.getTextRange(this.getSelectionRange());
         }
@@ -473,8 +490,11 @@ var Editor = React.createClass({
         // detect object under cursor
         var pos = this.editor.getCursorPosition();
         var line_text = this.editor.session.getLine(pos.row);
+        // Grab the qualified identifier straddling the cursor. Use an explicit class
+        // [A-Za-z0-9_.] -- the old "[A-z...]" range also matched the stray punctuation
+        // (`[ \ ] ^ _ \``) that sits between 'Z' and 'a' in ASCII.
         var part1 = line_text.substring(0, pos.column);
-        part1 = part1.match("[A-z0-9.]*$");
+        part1 = part1.match(/[A-Za-z0-9_.]*$/);
         if (part1 != null){
             part1 = part1[0]
         } else {
@@ -482,7 +502,7 @@ var Editor = React.createClass({
         }
 
         var part2 = line_text.substring(pos.column);
-        part2 = part2.match("^[A-z0-9.]+");
+        part2 = part2.match(/^[A-Za-z0-9_.]+/);
         if (part2 != null){
             part2 = part2[0]
         } else {
@@ -639,7 +659,13 @@ var Editor = React.createClass({
         var position = this.editor.getCursorPosition();
         var line = this.editor.session.getLine(position.row);
         line = line.slice(0, position.column);
-        line = line.match(/\w+$/);
+        // Match the full qualified token INCLUDING dots. Cycling completions replaces the
+        // word under the cursor with the highlighted hint; if the previously-inserted hint
+        // was qualified (e.g. "user_dr4rc3.gaia_source"), a plain /\w+$/ would only cover
+        // the segment after the last dot and leave the schema prefix behind, so each
+        // up/down would accumulate another "schema." in front. /[\w.]+$/ replaces the whole
+        // qualified name each cycle.
+        line = line.match(/[\w.]+$/);
         if (line != null){
             var word = line[0];
             var range = new Range(position.row, position.column - word.length, position.row, position.column);

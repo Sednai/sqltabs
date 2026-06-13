@@ -24,36 +24,40 @@ function scrollTo(div, to){
 
 function scrollToDown(div, to){
 
-    console.log(div, to);
+    var d = $(div), t = $(to);
+    var dOff = d.offset(), tOff = t.offset();
+    if (!dOff || !tOff){ return; } // container or active hint not in the DOM yet
 
-    var scroll = $(div).scrollTop();
-    var position = $(to).offset().top - $(div).offset().top;
+    var scroll = d.scrollTop();
+    var position = tOff.top - dOff.top;
     if (position < 0){ // id scrolled away up
-        return $(div).scrollTop(position);
+        return d.scrollTop(position);
     }
-    if (position > $(div).height()){ // if scrolled away down
-        return $(div).scrollTop(position);
+    if (position > d.height()){ // if scrolled away down
+        return d.scrollTop(position);
     }
-    if (position > $(div).height() - 2*$(to).height()){
-        return $(div).scrollTop(scroll + $(to).height());
+    if (position > d.height() - 2*t.height()){
+        return d.scrollTop(scroll + t.height());
     }
 }
 
 function scrollToUp(div, to){
 
-    console.log(div, to);
+    var d = $(div), t = $(to);
+    var dOff = d.offset(), tOff = t.offset();
+    if (!dOff || !tOff){ return; } // container or active hint not in the DOM yet
 
-    var scroll = $(div).scrollTop();
-    var position = $(to).offset().top - $(div).offset().top;
+    var scroll = d.scrollTop();
+    var position = tOff.top - dOff.top;
 
-    if (position + $(to).height() < 0){ // if scrolled away up
-        return $(div).scrollTop(position);
+    if (position + t.height() < 0){ // if scrolled away up
+        return d.scrollTop(position);
     }
-    if (position > $(div).height()){ // if scrolled away down
-        return $(div).scrollTop(position);
+    if (position > d.height()){ // if scrolled away down
+        return d.scrollTop(position);
     }
-    if (position - $(to).height() < 0){
-        return $(div).scrollTop(scroll - $(to).height());
+    if (position - t.height() < 0){
+        return d.scrollTop(scroll - t.height());
     }
 }
 

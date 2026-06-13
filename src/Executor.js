@@ -62,7 +62,7 @@ var Executor = {
         } else if (connstr.indexOf('redshift://') == 0){
             db = postgres;
             db.redshift = true;
-        } else if (connstr.indexOf('tap://') == 0 || connstr.indexOf('taps://') == 0 || connstr.indexOf('gaia://') == 0){
+        } else if (connstr.indexOf('tap://') == 0 || connstr.indexOf('taps://') == 0 || connstr.indexOf('gaia://') == 0 || connstr.indexOf('gaiapre://') == 0){
             db = tap; // IVOA TAP / ADQL service (e.g. ESA Gaia archive)
         }
         db.connstr = connstr;

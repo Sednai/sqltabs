@@ -23,23 +23,45 @@ var Menu = remote.Menu;
 var BrowserWindow = remote.BrowserWindow;
 var dialog = remote.dialog;
 var app = remote.app;
+var path = require('path');
+var Config = require('./Config');
+
+// Open/Save dialogs reopen in the last-used directory, and we remember it on each use.
+var lastDirOpts = function(){
+    var dir = Config.getLastUsedDir();
+    return dir ? { defaultPath: dir } : {};
+};
+var rememberDir = function(filePath){
+    if (filePath){ Config.saveLastUsedDir(path.dirname(filePath)); }
+};
+
+// When the user types no extension, default to .sql -- or .adql for a TAP/ADQL connection.
+var ensureExtension = function(filePath){
+    if (!filePath || path.extname(filePath) !== ''){ return filePath; }
+    var cs = TabsStore.getConnstr(TabsStore.selectedTab) || '';
+    var adql = cs.indexOf('gaia://') === 0 || cs.indexOf('gaiapre://') === 0 || cs.indexOf('tap://') === 0 || cs.indexOf('taps://') === 0;
+    return filePath + (adql ? '.adql' : '.sql');
+};
+
+var openFileByPath = function(filename){
+    var existing_tab = TabsStore.getTabByFilename(filename);
+    if (existing_tab != null){
+        Actions.select(existing_tab);
+    } else {
+        Actions.newTab(null, filename);
+    }
+};
 
 // Modern Electron dialogs return a Promise of {canceled, filePaths|filePath}
 // instead of taking a callback. Guard against cancel (filePaths/filePath unset).
 var openFile = function(){
-    dialog.showOpenDialog({ properties: ['openFile', 'multiSelections']})
+    dialog.showOpenDialog(Object.assign({ properties: ['openFile', 'multiSelections'] }, lastDirOpts()))
     .then(function(result){
         if (result.canceled || result.filePaths == null){
             return;
         }
-        result.filePaths.forEach(function(filename){
-            var existing_tab = TabsStore.getTabByFilename(filename);
-            if ( existing_tab != null){
-                Actions.select(existing_tab);
-            } else {
-                Actions.newTab(null, filename);
-            }
-        });
+        rememberDir(result.filePaths[0]);
+        result.filePaths.forEach(openFileByPath);
     });
 }
 
@@ -48,29 +70,53 @@ var saveFile = function(){
     if ( filename != null){
         Actions.saveFile(filename);
     } else {
-        dialog.showSaveDialog({}).then(function(result){
+        dialog.showSaveDialog(lastDirOpts()).then(function(result){
             if (!result.canceled && result.filePath){
-                Actions.saveFile(result.filePath);
+                var p = ensureExtension(result.filePath);
+                rememberDir(p);
+                Actions.saveFile(p);
             }
         });
     }
 }
 
 var saveFileAs = function(){
-    dialog.showSaveDialog({}).then(function(result){
+    dialog.showSaveDialog(lastDirOpts()).then(function(result){
         if (!result.canceled && result.filePath){
-            Actions.saveFile(result.filePath);
+            var p = ensureExtension(result.filePath);
+            rememberDir(p);
+            Actions.saveFile(p);
         }
     });
 }
 
 var exportResult = function(format){
-    dialog.showSaveDialog({}).then(function(result){
+    dialog.showSaveDialog(lastDirOpts()).then(function(result){
         if (!result.canceled && result.filePath){
-            Actions.exportResult(result.filePath, format);
+            var p = result.filePath;
+            if (path.extname(p) === ''){ p = p + '.' + format; } // default .csv / .json
+            rememberDir(p);
+            Actions.exportResult(p, format);
         }
     });
 }
+
+// "File > Open Recent" items, rebuilt from the last-20 list each time the menu rebuilds.
+var recentFilesSubmenu = function(){
+    var items = (TabsStore.fileHistory || []).slice(0, 20).map(function(f){
+        return { label: f, click: function(){ openFileByPath(f); } };
+    });
+    if (items.length === 0){
+        return [{ label: 'No Recent Files', enabled: false }];
+    }
+    items.push({ type: 'separator' });
+    items.push({ label: 'Clear Recent', click: function(){ TabsStore.fileHistory = []; Config.saveFileHistory([]); buildMenu(); } });
+    return items;
+};
+
+// Rebuildable so "Open Recent" reflects the current list; called at startup and on the
+// 'rebuild-menu' event after every file open/save.
+var buildMenu = function(){
 
 var template;
 
@@ -124,6 +170,9 @@ if (process.platform == 'darwin'){
             {label: "Save As",
              accelerator: "Command+Shift+S",
              click: saveFileAs,
+            },
+            {label: "Open Recent",
+             submenu: recentFilesSubmenu(),
             },
             {label: "Close File",
              click: Actions.closeFile,
@@ -272,6 +321,9 @@ if (process.platform == 'darwin'){
              accelerator: "Ctrl+Shift+S",
              click: function(){saveFileAs();},
             },
+            {label: "Open Recent",
+             submenu: recentFilesSubmenu(),
+            },
             {label: "Close File",
              click: function(){Actions.closeFile()},
             },
@@ -392,4 +444,9 @@ if (process.platform == 'darwin'){
 
 var menu = Menu.buildFromTemplate(template);
 Menu.setApplicationMenu(menu);
+
+}; // end buildMenu
+
+TabsStore.bind('rebuild-menu', buildMenu); // refresh "Open Recent" after open/save
+buildMenu();
 
