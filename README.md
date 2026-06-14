@@ -189,7 +189,8 @@ WHERE score_lpv > 0.9
 ```
 
 - **Syntax:** `--- datalink <retrieval_type> [release] [cols=a,b,c] [render-marker]`
-- **`<retrieval_type>`** — e.g. `epoch_photometry`, `epoch_rv` (case-insensitive).
+- **`<retrieval_type>`** — the product to fetch (case-insensitive); see the table
+  of Gaia products below.
 - **`[release]`** — the dataset release token, **quoted if it contains a space**.
   Defaults to `"Gaia DR3"`; the pre-release archive uses e.g. `"Gaia DR4_RC3"`.
 - **`cols=a,b,c`** — keep only these columns (comma-separated, no spaces), in the
@@ -205,6 +206,27 @@ WHERE score_lpv > 0.9
   connection.
 - Sources are fetched individually and combined; a run is capped at 5000 sources
   (narrow the query or split it for more).
+
+#### Gaia DataLink products
+
+These `retrieval_type` tokens are available (verified against the Gaia DR4_RC3
+pre-release archive; DR3 exposes the same products where published). ZIP-format
+products are unpacked automatically.
+
+| `retrieval_type` | Product | Format |
+|------------------|---------|--------|
+| `EPOCH_PHOTOMETRY` | Epoch photometry (G/BP/RP light curves) | CSV |
+| `EPOCH_PHOTOMETRY_CCD` | Epoch photometry, per-CCD | CSV |
+| `EPOCH_ASTROMETRY` | Epoch astrometry | CSV |
+| `EPOCH_PARAMETERS_RVS_SINGLE` | RVS epoch parameters (single) | CSV |
+| `EPOCH_SPECTRUM_XP` | XP epoch spectra (BP/RP) | CSV |
+| `EPOCH_SPECTRUM_RVS` | RVS epoch spectra | ZIP → CSV |
+| `MEAN_SPECTRUM_XP` | XP mean spectrum | CSV |
+| `MEAN_SPECTRUM_RVS` | RVS mean spectrum | CSV |
+
+The exact set depends on the release and the source; availability and naming are
+defined by the archive, not by SQL Tabs — any token the service accepts will work
+here. (Some products are only present for sources that have that data.)
 
 ### Saving results as a TAP user table
 
