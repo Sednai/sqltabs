@@ -51,7 +51,8 @@ var Words = require('./keywords.js');
 var TAP_SYNC_TIMEOUT = 120000;            // abort a sync request after 2 min
 var InFlight = {};                        // id -> http request, so cancelQuery(id) can abort
 var AsyncJobs = {};                        // id -> {cancelled, base, jobUrl, cookie, timer} for /async cancellation
-var Sessions = {};                        // "base|user" -> "JSESSIONID=..." session cookie
+var Sessions = {};                        // "base|user" -> "JSESSIONID=..." tap-server session cookie
+var DataSessions = {};                    // "base|user" -> data-server (DataLink) session cookie
 var SchemaWords = {};                     // "base|user" -> cached completion words
 
 var ASYNC_POLL_MS = 1500;                 // delay between UWS phase polls
@@ -83,6 +84,16 @@ function parseConn(connstr){
 }
 function sessionKey(c){ return c.base + '|' + (c.user || ''); }
 function loginUrl(c){ return /\/tap$/.test(c.base) ? c.base.replace(/\/tap$/, '/login') : c.base + '/login'; }
+// The DataLink retrieval endpoint lives beside the TAP server: a base of
+// https://host/tap-server/tap maps to https://host/data-server/data. The data-server is
+// a SEPARATE Tomcat context with its own login + its own Path=/data-server JSESSIONID,
+// so it must be authenticated independently of the /tap-server session.
+function dataServerBase(c){
+    if (/\/tap-server\/tap$/.test(c.base)){ return c.base.replace(/\/tap-server\/tap$/, '/data-server'); }
+    return c.base.replace(/\/tap$/, '') + '/data-server'; // best-effort for a generic TAP service
+}
+function dataServerUrl(c){ return dataServerBase(c) + '/data'; }
+function dataLoginUrl(c){ return dataServerBase(c) + '/login'; }
 
 // Minimal RFC-4180 CSV parser -> array of rows (each an array of string fields). Handles
 // quoted fields containing commas, embedded newlines and doubled ("") quotes.
@@ -156,6 +167,16 @@ function encodeParams(params){
     return Object.keys(params).map(function(k){ return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); }).join('&');
 }
 
+// The data-server reports failures as either a VOTABLE <INFO value="ERROR"> or an HTML
+// Tomcat page; extract a short human message from whichever it is.
+function dlError(status, body){
+    var v = /value="ERROR">([\s\S]*?)<\/INFO>/.exec(body || '');
+    if (v){ return v[1].replace(/\s+/g, ' ').trim().slice(0, 200); }
+    var h = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(body || '') || /<title>([\s\S]*?)<\/title>/i.exec(body || '');
+    if (h){ return h[1].replace(/\s+/g, ' ').trim().slice(0, 200); }
+    return 'HTTP ' + status;
+}
+
 // Low-level form POST. cookie (optional) authenticates; id (optional) registers the request
 // for cancelQuery. onResp(status, headers, text) / onErr(message).
 function httpPost(urlStr, params, cookie, id, onResp, onErr){
@@ -207,14 +228,20 @@ function httpGet(urlStr, cookie, onResp, onErr){
     req.end();
 }
 
+// Capture ALL cookies from a Set-Cookie response, not just JSESSIONID. The Gaia archive
+// runs /tap-server and /data-server as separate Tomcat contexts: the per-context
+// JSESSIONID is Path=/tap-server (a browser would never send it to /data-server), while
+// cross-context auth (DataLink downloads) relies on a root-scoped SSO cookie set at login
+// (e.g. JSESSIONIDSSO, Path=/). Replaying every name=value pair authenticates both servers.
 function extractSessionCookie(headers){
     var sc = headers['set-cookie'];
-    if (!sc){ return null; }
+    if (!sc || !sc.length){ return null; }
+    var pairs = [];
     for (var i = 0; i < sc.length; i++){
-        var m = /JSESSIONID=([^;]+)/.exec(sc[i]);
-        if (m){ return 'JSESSIONID=' + m[1]; }
+        var m = /^\s*([^=;]+)=([^;]*)/.exec(sc[i]);
+        if (m){ pairs.push(m[1].trim() + '=' + m[2]); }
     }
-    return null;
+    return pairs.length ? pairs.join('; ') : null;
 }
 
 // The app's PasswordDialog stores passwords URL-encoded (so they can be embedded in a
@@ -254,6 +281,34 @@ function ensureSession(connstr, password, ok, fail){
     if (cached){ ok(cached); return; }                      // reuse the established session
     if (password){ tapLogin(connstr, password, ok, fail); return; }
     ok(null);                                               // no session yet, no password: best-effort anonymous
+}
+
+// Log in to the data-server (DataLink) context, which is separate from /tap-server and
+// issues its own Path=/data-server cookie. ok(cookie) / fail({status,msg}).
+function dataLogin(connstr, password, ok, fail){
+    var c = parseConn(connstr);
+    httpPost(dataLoginUrl(c), { username: c.user, password: decodeSecret(password) }, null, null,
+        function(status, headers, text){
+            if (status >= 200 && status < 300){
+                var cookie = extractSessionCookie(headers);
+                if (cookie){ DataSessions[sessionKey(c)] = cookie; ok(cookie); }
+                else { fail({ status: status, msg: 'data-server login returned no session cookie' }); }
+            } else {
+                fail({ status: status, msg: status === 401 ? 'Bad credentials' : errorFromBody(status, text) });
+            }
+        },
+        function(e){ fail({ status: 0, msg: e }); });
+}
+
+// Resolve a data-server session cookie (cached or freshly logged-in). DataLink downloads
+// of proprietary releases require it; anonymous (no user) resolves to null.
+function ensureDataSession(connstr, password, ok, fail){
+    var c = parseConn(connstr);
+    if (!c.user){ ok(null); return; }
+    var cached = DataSessions[sessionKey(c)];
+    if (cached){ ok(cached); return; }
+    if (password){ dataLogin(connstr, password, function(ck){ ok(ck); }, fail); return; }
+    ok(null);
 }
 
 // POST an ADQL query to /sync. ok(bodyText) / fail(message). Re-logs-in once on a 401 when a
@@ -376,6 +431,101 @@ function tapAsync(connstr, query, password, id, ok, fail, triedRelogin){
     }
 }
 
+var DATALINK_MAX_IDS = 5000;   // the archive's GUI/service caps a retrieval at 5000 sources
+var DATALINK_CONCURRENCY = 4;  // parallel per-source GETs (each returns that source's CSV)
+
+// Fetch a DataLink product (e.g. EPOCH_PHOTOMETRY) for a list of source_ids and return the
+// rows as one combined CSV. The multi-id endpoint returns a ZIP, so to stay dependency-free
+// we request each source individually (plain CSV) with bounded concurrency and concatenate,
+// keeping a single header. ok(csvText) / fail(message). retrievalType e.g. 'EPOCH_PHOTOMETRY',
+// release e.g. 'Gaia DR3'. Runs in the authenticated session (DR4 etc. need login).
+function tapDataLink(connstr, ids, retrievalType, release, password, ok, fail){
+    var c = parseConn(connstr);
+    if (!ids || ids.length === 0){ fail('no source_id values to retrieve'); return; }
+    if (ids.length > DATALINK_MAX_IDS){
+        fail('DataLink is limited to ' + DATALINK_MAX_IDS + ' sources per run; got ' + ids.length +
+             '. Narrow the query (e.g. add a WHERE filter) or split it.');
+        return;
+    }
+    var base = dataServerUrl(c);
+
+    // DataLink downloads authenticate against the data-server context (its own login +
+    // Path=/data-server cookie), NOT the /tap-server session.
+    ensureDataSession(connstr, password, function(cookie){
+        var header = null;       // first non-empty CSV header, emitted once
+        var bodyLines = [];      // data rows from every source, in completion order
+        var errors = [];
+        var next = 0, active = 0, finished = 0, settled = false;
+        var reloginInFlight = null; // dedup concurrent 401 re-logins into one request
+
+        // The data-server can expire its session cookie mid-batch ("Credentials
+        // expiration" 401). Re-login once (shared across all in-flight workers that hit
+        // 401 together) and retry the affected sources.
+        var relogin = function(cb){
+            if (reloginInFlight){ reloginInFlight.push(cb); return; }
+            if (!(c.user && password)){ cb(null); return; } // can't re-login anonymously
+            reloginInFlight = [cb];
+            delete DataSessions[sessionKey(c)];
+            dataLogin(connstr, password, function(fresh){
+                cookie = fresh;
+                var waiters = reloginInFlight; reloginInFlight = null;
+                waiters.forEach(function(w){ w(fresh); });
+            }, function(){
+                var waiters = reloginInFlight; reloginInFlight = null;
+                waiters.forEach(function(w){ w(null); });
+            });
+        };
+
+        var fetchOne = function(idx, retried){
+            var sid = ids[idx];
+            // One id per request -> plain CSV (multiple comma-separated ids return a ZIP).
+            var u = base + '?ID=' + encodeURIComponent(release + ' ' + sid) +
+                    '&RETRIEVAL_TYPE=' + encodeURIComponent(retrievalType) + '&FORMAT=CSV&DATA_STRUCTURE=INDIVIDUAL';
+            httpGet(u, cookie, function(status, headers, text){
+                if (status === 401 && !retried && c.user && password){ // session expired -> relogin once, retry
+                    relogin(function(fresh){
+                        if (fresh){ fetchOne(idx, true); }           // retry with the refreshed cookie
+                        else { errors.push(sid + ': HTTP 401 (login expired)'); done(); }
+                    });
+                    return;
+                }
+                var ct = (headers && headers['content-type']) || '';
+                if (status >= 200 && status < 300 && /csv/.test(ct)){
+                    var rows = (text || '').split(/\r?\n/);
+                    if (rows.length && rows[0] !== ''){
+                        if (header == null){ header = rows[0]; }
+                        for (var i = 1; i < rows.length; i++){ if (rows[i] !== ''){ bodyLines.push(rows[i]); } }
+                    }
+                } else if (status !== 404){ // 404/empty = that source simply has no such product
+                    errors.push(sid + ': ' + dlError(status, text));
+                }
+                done();
+            }, function(e){ errors.push(sid + ': ' + e); done(); });
+        };
+
+        var done = function(){
+            active--; finished++;
+            pump();
+            if (finished === ids.length && !settled){
+                settled = true;
+                if (header == null){
+                    fail(errors.length ? ('DataLink returned no data. First errors: ' + errors.slice(0, 3).join('; '))
+                                       : 'DataLink returned no rows for the requested sources');
+                    return;
+                }
+                ok([header].concat(bodyLines).join('\n') + '\n');
+            }
+        };
+
+        var pump = function(){
+            while (active < DATALINK_CONCURRENCY && next < ids.length){
+                var idx = next++; active++; fetchOne(idx, false);
+            }
+        };
+        pump();
+    }, function(e){ fail(e.msg || 'login failed'); });
+}
+
 var Response = function(query){
     this.connector_type = "tap";
     // default to '' so the renderer's query.replace(...)/match(...) calls are safe even
@@ -424,6 +574,16 @@ var Database = {
     },
 
     runQuery: function(id, connstr, password, query, callback, err_callback){
+        // `--- datalink <retrieval_type> [release]` is an execution directive: run the
+        // block's inner ADQL to collect source_ids, then fetch that DataLink product
+        // (e.g. epoch photometry) for them and render the combined CSV. Release defaults
+        // to "Gaia DR3"; quote a multi-word release, e.g. `--- datalink epoch_rv "Gaia DR4"`.
+        var dl = /^\s*---\s+datalink\s+(\S+)\s*("[^"]*"|\S+)?/i.exec(query);
+        if (dl){
+            this._runDataLink(id, connstr, password, query, dl, callback, err_callback);
+            return;
+        }
+
         // `async` is an execution directive: detect it on the leading `--- async ...`
         // marker and strip just that token, leaving any following render marker
         // (chart/csv/...) intact so SqlDoc still sees e.g. "--- chart line x y".
@@ -441,6 +601,39 @@ var Database = {
                 callback(id, [response]);
             },
             function(msg){ err_callback(id, msg); });
+    },
+
+    _runDataLink: function(id, connstr, password, query, dlMatch, callback, err_callback){
+        var retrievalType = dlMatch[1].toUpperCase();
+        var release = (dlMatch[2] || 'Gaia DR3').replace(/^"|"$/g, ''); // strip optional quotes
+        // The inner ADQL is the block minus its marker line; it must return a source_id
+        // column. The leading `---` line is an ADQL comment, so we can send as-is, but we
+        // strip the marker so it can also be run async-large if needed in the future.
+        var innerQuery = query.replace(/^\s*---\s+datalink\b.*\r?\n?/i, '');
+        // keep the render marker (chart/csv) for SqlDoc by re-deriving it from the marker tail
+        var renderQuery = query.replace(/^(\s*---\s+)datalink\s+\S+\s*(?:"[^"]*"|\S+)?\s*/i, '$1');
+        var response = new Response(renderQuery);
+
+        // 1) run the inner query to get source_ids
+        tapSync(connstr, innerQuery, password, id, function(csvText){
+            var rows = parseCSV(csvText);
+            if (rows.length <= 1){ err_callback(id, 'DataLink: the query returned no rows (need a source_id column)'); return; }
+            var header = rows[0];
+            var sidCol = -1;
+            for (var i = 0; i < header.length; i++){ if (String(header[i]).toLowerCase() === 'source_id'){ sidCol = i; break; } }
+            if (sidCol === -1){ sidCol = 0; } // fall back to the first column
+            var ids = [], seen = {};
+            for (var r = 1; r < rows.length; r++){
+                var v = rows[r][sidCol];
+                if (v != null && v !== '' && !seen[v]){ seen[v] = 1; ids.push(v); }
+            }
+            // 2) fetch the DataLink product for those ids and render the combined CSV
+            tapDataLink(connstr, ids, retrievalType, release, password, function(dlCsv){
+                response.finish();
+                response.datasets.push(csvDataset(dlCsv));
+                callback(id, [response]);
+            }, function(msg){ err_callback(id, msg); });
+        }, function(msg){ err_callback(id, msg); });
     },
 
     cancelQuery: function(id){
@@ -479,12 +672,17 @@ var Database = {
             err_callback(id, 'Put the cursor on a table name (e.g. gaiadr3.gaia_source) and press Ctrl/Cmd+I');
             return;
         }
+        // split schema.table for the ObjectInfo header (it renders schema.relname); a
+        // table with no schema qualifier shows an empty schema.
+        var dot = tbl.lastIndexOf('.');
+        var schema = dot >= 0 ? tbl.slice(0, dot) : '';
+        var relname = dot >= 0 ? tbl.slice(dot + 1) : tbl;
         var emit = function(columns){
             callback(id, {
                 object_type: 'relation',
                 object_name: tbl,
                 object: {
-                    relkind: 'r', columns: columns,
+                    relkind: 'r', schema: schema, relname: relname, columns: columns,
                     pk: null, check_constraints: null, foreign_keys: null,
                     indexes: null, triggers: null, records: null, size: null, total_size: null
                 }

@@ -656,6 +656,7 @@ var Editor = React.createClass({
 
     complete: function(){
         var hint = this.hints[this.current_hint];
+        if (hint == null){ return; } // no current hint (empty list / current_hint == -1): nothing to insert
         var position = this.editor.getCursorPosition();
         var line = this.editor.session.getLine(position.row);
         line = line.slice(0, position.column);

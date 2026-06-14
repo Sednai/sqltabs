@@ -173,6 +173,34 @@ uploaded results) in `TAP_SCHEMA`.
   job server-side with a much longer allowance. `Ctrl/Cmd+B` (Break Execution)
   aborts a running async job.
 
+### Time series (DataLink)
+
+Per-source products such as **epoch photometry** (light curves) and **epoch
+radial velocity** are not returned by an ADQL `SELECT` — they are served through
+the IVOA **DataLink** protocol. The `--- datalink` block marker bridges the two:
+it runs the block's ADQL to collect `source_id`s, then downloads the requested
+DataLink product for them and renders the combined result.
+
+```adql
+--- datalink epoch_photometry "Gaia DR4_RC3" chart scatter
+SELECT TOP 50 source_id
+FROM user_dr4rc3.vari_long_period_variable
+WHERE score_lpv > 0.9
+```
+
+- **Syntax:** `--- datalink <retrieval_type> [release] [render-marker]`
+- **`<retrieval_type>`** — e.g. `epoch_photometry`, `epoch_rv` (case-insensitive).
+- **`[release]`** — the dataset release token, **quoted if it contains a space**.
+  Defaults to `"Gaia DR3"`; the pre-release archive uses e.g. `"Gaia DR4_RC3"`.
+- Composes with a render marker, so `--- datalink epoch_photometry "Gaia DR4_RC3"
+  chart scatter` plots the light curve.
+- **Authentication:** DataLink uses the archive's separate data-server login
+  (handled automatically from your connection's saved credentials); proprietary
+  releases like DR4 require an authenticated `gaia://<user>` / `gaiapre://<user>`
+  connection.
+- Sources are fetched individually and combined; a run is capped at 5000 sources
+  (narrow the query or split it for more).
+
 ## SQL documents: block directives
 
 A script is split into blocks separated by lines beginning with `---`. The text
@@ -186,10 +214,12 @@ after `---` on that line selects how the block's result is rendered:
 | `--- csv` | raw comma-separated values |
 | `--- hidden` | nothing (run for side effects) |
 
-For TAP/ADQL connections, an `--- async` prefix changes **how the block is
-executed** (via the asynchronous `/async` endpoint) rather than how it is
-rendered, so it composes with a render directive — e.g. `--- async chart line`
-runs the query asynchronously and draws a chart. See
+For TAP/ADQL connections two further prefixes change **how the block is
+executed** rather than how it is rendered, so each composes with a render
+directive: `--- async` runs via the asynchronous `/async` endpoint (e.g.
+`--- async chart line`), and `--- datalink <type> [release]` retrieves a
+per-source DataLink product such as epoch photometry (e.g.
+`--- datalink epoch_photometry "Gaia DR4_RC3" chart scatter`). See
 [Gaia / IVOA TAP](#gaia--ivoa-tap-archives).
 
 You can also embed Markdown anywhere with `/** ... **/` blocks (rendered as

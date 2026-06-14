@@ -269,8 +269,6 @@ var _TabsStore = function(){
         this.tabs[id].password = password;
         var connstr = this.getConnstr(id);
 
-        console.log(connstr, password, savePassword);
-
         if (savePassword){
             Config.saveSecret(connstr, password);
         } else {

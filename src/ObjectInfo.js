@@ -367,6 +367,9 @@ LIMIT 100;`;
 
             columns.push(column);
         }
+        // wrap the header+rows in a <tbody> (the sequence branch already does) so the
+        // <tr>s are valid table children -- React warns on <tr> directly under <table>.
+        columns = <tbody>{columns}</tbody>;
 
         // pk
         var pk = null;
@@ -491,7 +494,6 @@ LIMIT 100;`;
 
         return (
         <div className="object-info-div">
-            <p>
             <div>{relkind}&nbsp;
             <span className="object-info-name">
                 <a href="#" onClick={function(){self.getInfo(info.object.schema+'.');}}>{info.object.schema}</a>.{info.object.relname}
@@ -502,7 +504,6 @@ LIMIT 100;`;
             <table className="object-info-columns-table table-hover">
                 {columns}
             </table>
-            </p>
             {pk}
             {indexes}
             {check_constraints}
