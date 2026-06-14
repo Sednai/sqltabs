@@ -45,6 +45,8 @@
 var https = require('https');
 var http = require('http');
 var url = require('url');
+var crypto = require('crypto');
+var zlib = require('zlib');
 var async = require('async');
 var Words = require('./keywords.js');
 
@@ -94,6 +96,52 @@ function dataServerBase(c){
 }
 function dataServerUrl(c){ return dataServerBase(c) + '/data'; }
 function dataLoginUrl(c){ return dataServerBase(c) + '/login'; }
+
+// Dependency-free ZIP reader: returns [{name, content(Buffer)}]. Some DataLink products
+// (e.g. EPOCH_SPECTRUM_RVS) are always returned as a ZIP of per-transit CSVs. There is no
+// built-in JS module that reads the ZIP container, but Node's zlib does the DEFLATE part;
+// we parse the central directory (local headers may omit sizes via a data descriptor) and
+// inflate each entry. Only the common store(0)/deflate(8) methods are supported.
+function unzipEntries(buf){
+    if (!buf || buf.length < 22){ throw new Error('not a zip archive'); }
+    var eocd = -1;
+    for (var p = buf.length - 22; p >= 0; p--){ if (buf.readUInt32LE(p) === 0x06054b50){ eocd = p; break; } }
+    if (eocd < 0){ throw new Error('not a zip archive'); }
+    var count = buf.readUInt16LE(eocd + 10);
+    var i = buf.readUInt32LE(eocd + 16);
+    var entries = [];
+    for (var n = 0; n < count; n++){
+        if (i + 46 > buf.length || buf.readUInt32LE(i) !== 0x02014b50){ break; } // central directory header
+        var method = buf.readUInt16LE(i + 10);
+        var compSize = buf.readUInt32LE(i + 20);
+        var nameLen = buf.readUInt16LE(i + 28);
+        var extraLen = buf.readUInt16LE(i + 30);
+        var commentLen = buf.readUInt16LE(i + 32);
+        var lho = buf.readUInt32LE(i + 42);
+        var name = buf.slice(i + 46, i + 46 + nameLen).toString('utf8');
+        var lNameLen = buf.readUInt16LE(lho + 26), lExtraLen = buf.readUInt16LE(lho + 28);
+        var dataStart = lho + 30 + lNameLen + lExtraLen;
+        var comp = buf.slice(dataStart, dataStart + compSize);
+        var content = method === 8 ? zlib.inflateRawSync(comp) : comp;
+        entries.push({ name: name, content: content });
+        i = i + 46 + nameLen + extraLen + commentLen;
+    }
+    return entries;
+}
+
+// Concatenate the CSV bodies of every entry in a ZIP buffer into one CSV (single header).
+function zipToCsv(buf){
+    var entries = unzipEntries(buf);
+    var header = null, bodyLines = [];
+    entries.forEach(function(e){
+        var rows = e.content.toString('utf8').split(/\r?\n/);
+        if (!rows.length){ return; }
+        if (header == null){ header = rows[0]; }
+        for (var i = 1; i < rows.length; i++){ if (rows[i] !== ''){ bodyLines.push(rows[i]); } }
+    });
+    if (header == null){ return ''; }
+    return [header].concat(bodyLines).join('\n') + '\n';
+}
 
 // Minimal RFC-4180 CSV parser -> array of rows (each an array of string fields). Handles
 // quoted fields containing commas, embedded newlines and doubled ("") quotes.
@@ -208,20 +256,57 @@ function httpPost(urlStr, params, cookie, id, onResp, onErr){
     req.end();
 }
 
+// Low-level multipart/form-data POST. fields is an object of name->value text parts. The
+// FILE part is empty for a job-based upload, or carries `file` (a {name, content, type})
+// to upload actual data. onResp(status, headers, text) / onErr(message).
+function httpPostMultipart(urlStr, fields, cookie, onResp, onErr, file){
+    var u = url.parse(urlStr);
+    var lib = (u.protocol === 'http:') ? http : https;
+    var boundary = '----sqltabs' + crypto.randomBytes(12).toString('hex');
+    var parts = [];
+    Object.keys(fields).forEach(function(k){
+        parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="' + k + '"\r\n\r\n' + fields[k] + '\r\n'));
+    });
+    if (file){
+        parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="FILE"; filename="' + file.name + '"\r\nContent-Type: ' + (file.type || 'text/csv') + '\r\n\r\n'));
+        parts.push(Buffer.isBuffer(file.content) ? file.content : Buffer.from(file.content, 'utf8'));
+        parts.push(Buffer.from('\r\n'));
+    } else {
+        parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="FILE"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n\r\n'));
+    }
+    parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="URL"\r\n\r\n\r\n'));
+    parts.push(Buffer.from('--' + boundary + '--\r\n'));
+    var body = Buffer.concat(parts);
+    var headers = { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'Content-Length': body.length, 'Accept': '*/*' };
+    if (cookie){ headers['Cookie'] = cookie; }
+    var settled = false;
+    var finish = function(fn, a, b, c){ if (settled){ return; } settled = true; fn(a, b, c); };
+    var req = lib.request({ method: 'POST', hostname: u.hostname, port: u.port, path: u.path, headers: headers }, function(res){
+        var chunks = [];
+        res.on('data', function(d){ chunks.push(d); });
+        res.on('end', function(){ finish(onResp, res.statusCode, res.headers, Buffer.concat(chunks).toString('utf8')); });
+    });
+    req.on('error', function(e){ finish(onErr, e.message); });
+    req.setTimeout(TAP_SYNC_TIMEOUT, function(){ req.destroy(new Error('upload timed out after ' + (TAP_SYNC_TIMEOUT / 1000) + 's')); });
+    req.write(body);
+    req.end();
+}
+
 // Low-level GET; used to poll a UWS job phase and fetch its results. Does NOT register
 // in InFlight (async polling cancellation is handled at the job level, not the socket).
-// onResp(status, headers, text) / onErr(message).
+// onResp(status, headers, text, rawBuffer) / onErr(message). The raw Buffer lets binary
+// responses (e.g. a ZIP of CSVs) be handled without utf8 corruption.
 function httpGet(urlStr, cookie, onResp, onErr){
     var u = url.parse(urlStr);
     var lib = (u.protocol === 'http:') ? http : https;
     var headers = { 'Accept': 'text/plain, text/csv, */*' };
     if (cookie){ headers['Cookie'] = cookie; }
     var settled = false;
-    var finish = function(fn, a, b, c){ if (settled){ return; } settled = true; fn(a, b, c); };
+    var finish = function(fn, a, b, c, d){ if (settled){ return; } settled = true; fn(a, b, c, d); };
     var req = lib.request({ method: 'GET', hostname: u.hostname, port: u.port, path: u.path, headers: headers }, function(res){
         var chunks = [];
         res.on('data', function(d){ chunks.push(d); });
-        res.on('end', function(){ finish(onResp, res.statusCode, res.headers, Buffer.concat(chunks).toString('utf8')); });
+        res.on('end', function(){ var raw = Buffer.concat(chunks); finish(onResp, res.statusCode, res.headers, raw.toString('utf8'), raw); });
     });
     req.on('error', function(e){ finish(onErr, e.message); });
     req.setTimeout(TAP_SYNC_TIMEOUT, function(){ req.destroy(new Error('TAP request timed out after ' + (TAP_SYNC_TIMEOUT / 1000) + 's')); });
@@ -252,9 +337,11 @@ function decodeSecret(pw){
 }
 
 // POST username/password to the service's /login endpoint; on success cache the JSESSIONID.
-// ok(cookie) / fail({status, msg}).
-function tapLogin(connstr, password, ok, fail){
+// ok(cookie) / fail({status, msg}). The endpoint intermittently returns 200 with no
+// Set-Cookie; retry a couple of times before giving up rather than failing the whole flow.
+function tapLogin(connstr, password, ok, fail, _attempt){
     var c = parseConn(connstr);
+    var attempt = _attempt || 0;
     httpPost(loginUrl(c), { username: c.user, password: decodeSecret(password) }, null, null,
         function(status, headers, text){
             if (status >= 200 && status < 300){
@@ -263,6 +350,8 @@ function tapLogin(connstr, password, ok, fail){
                     Sessions[sessionKey(c)] = cookie;
                     delete SchemaWords[sessionKey(c)]; // refetch completion now that user tables are visible
                     ok(cookie);
+                } else if (attempt < 3){
+                    tapLogin(connstr, password, ok, fail, attempt + 1); // no cookie issued: retry
                 } else {
                     fail({ status: status, msg: 'login succeeded but no session cookie was returned' });
                 }
@@ -285,13 +374,15 @@ function ensureSession(connstr, password, ok, fail){
 
 // Log in to the data-server (DataLink) context, which is separate from /tap-server and
 // issues its own Path=/data-server cookie. ok(cookie) / fail({status,msg}).
-function dataLogin(connstr, password, ok, fail){
+function dataLogin(connstr, password, ok, fail, _attempt){
     var c = parseConn(connstr);
+    var attempt = _attempt || 0;
     httpPost(dataLoginUrl(c), { username: c.user, password: decodeSecret(password) }, null, null,
         function(status, headers, text){
             if (status >= 200 && status < 300){
                 var cookie = extractSessionCookie(headers);
                 if (cookie){ DataSessions[sessionKey(c)] = cookie; ok(cookie); }
+                else if (attempt < 3){ dataLogin(connstr, password, ok, fail, attempt + 1); } // intermittent: retry
                 else { fail({ status: status, msg: 'data-server login returned no session cookie' }); }
             } else {
                 fail({ status: status, msg: status === 401 ? 'Bad credentials' : errorFromBody(status, text) });
@@ -481,7 +572,7 @@ function tapDataLink(connstr, ids, retrievalType, release, password, ok, fail){
             // One id per request -> plain CSV (multiple comma-separated ids return a ZIP).
             var u = base + '?ID=' + encodeURIComponent(release + ' ' + sid) +
                     '&RETRIEVAL_TYPE=' + encodeURIComponent(retrievalType) + '&FORMAT=CSV&DATA_STRUCTURE=INDIVIDUAL';
-            httpGet(u, cookie, function(status, headers, text){
+            httpGet(u, cookie, function(status, headers, text, raw){
                 if (status === 401 && !retried && c.user && password){ // session expired -> relogin once, retry
                     relogin(function(fresh){
                         if (fresh){ fetchOne(idx, true); }           // retry with the refreshed cookie
@@ -490,12 +581,18 @@ function tapDataLink(connstr, ids, retrievalType, release, password, ok, fail){
                     return;
                 }
                 var ct = (headers && headers['content-type']) || '';
-                if (status >= 200 && status < 300 && /csv/.test(ct)){
-                    var rows = (text || '').split(/\r?\n/);
+                var addRows = function(csv){
+                    var rows = (csv || '').split(/\r?\n/);
                     if (rows.length && rows[0] !== ''){
                         if (header == null){ header = rows[0]; }
                         for (var i = 1; i < rows.length; i++){ if (rows[i] !== ''){ bodyLines.push(rows[i]); } }
                     }
+                };
+                if (status >= 200 && status < 300 && /csv/.test(ct)){
+                    addRows(text);
+                } else if (status >= 200 && status < 300 && /zip/.test(ct)){
+                    // some products (e.g. EPOCH_SPECTRUM_RVS) are always a ZIP of per-transit CSVs
+                    try { addRows(zipToCsv(raw)); } catch (e){ errors.push(sid + ': unreadable ZIP (' + e.message + ')'); }
                 } else if (status !== 404){ // 404/empty = that source simply has no such product
                     errors.push(sid + ': ' + dlError(status, text));
                 }
@@ -526,6 +623,119 @@ function tapDataLink(connstr, ids, retrievalType, release, password, ok, fail){
     }, function(e){ fail(e.msg || 'login failed'); });
 }
 
+// Run an ADQL query as an async job and call ok(jobid) once it reaches COMPLETED (the job
+// result stays on the server, ready to be promoted to a user table). fail(message).
+function runAsyncJob(connstr, query, cookie, ok, fail){
+    var c = parseConn(connstr);
+    var startTime = performance.now();
+    httpPost(c.base + '/async', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: 'csv', PHASE: 'RUN', QUERY: query }, cookie, null,
+        function(status, headers, text){
+            if (status < 200 || status >= 400){ fail(errorFromBody(status, text)); return; }
+            var loc = headers['location'];
+            if (!loc){ fail('async job created but no job URL was returned'); return; }
+            var jobUrl = loc.indexOf('http') === 0 ? loc : (url.parse(c.base).protocol + '//' + url.parse(c.base).host + loc);
+            var jobid = jobUrl.split('/').pop();
+            var poll = function(){
+                if (performance.now() - startTime > ASYNC_MAX_MS){ fail('async job did not finish within ' + (ASYNC_MAX_MS / 60000) + ' min'); return; }
+                httpGet(jobUrl + '/phase', cookie, function(s, h, t){
+                    var phase = parsePhase(t);
+                    if (phase === 'COMPLETED'){ ok(jobid); return; }
+                    if (phase === 'ERROR'){ httpGet(jobUrl + '/error', cookie, function(es, eh, et){ fail(errorFromBody(es, et) || 'async job failed'); }, function(e){ fail(e); }); return; }
+                    if (phase === 'ABORTED'){ fail('async job aborted'); return; }
+                    setTimeout(poll, ASYNC_POLL_MS);
+                }, function(e){ fail(e); });
+            };
+            poll();
+        },
+        function(e){ fail(e); });
+}
+
+// The Upload service reports outcome as "TAP_SERVICE_STATUS=..." (success) or an HTML
+// error page; extract a short message either way.
+function uploadStatus(body){
+    var m = /TAP_SERVICE_STATUS=([\s\S]*)/.exec(body || '');
+    if (m){ return m[1].replace(/\s+/g, ' ').trim().slice(0, 200); }
+    return dlError(0, body);
+}
+
+// Create a user_<name> table from an ADQL query, server-side: run the query async, then
+// POST the finished job to the Upload service (multipart, with an empty FILE part) to
+// promote its result table. ok(message) / fail(message).
+function tapUpload(connstr, query, tableName, tableDesc, password, ok, fail){
+    var c = parseConn(connstr);
+    if (!c.user){ fail('Uploading a table requires an authenticated connection (e.g. gaia://<user>)'); return; }
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(tableName)){
+        fail('Invalid table name "' + tableName + '": use letters, digits and underscores, starting with a letter');
+        return;
+    }
+    var uploadUrl = (/\/tap$/.test(c.base) ? c.base.replace(/\/tap$/, '') : c.base) + '/Upload';
+
+    var doUpload = function(cookie, allowRetry){
+        runAsyncJob(connstr, query, cookie, function(jobid){
+            httpPostMultipart(uploadUrl, {
+                TASKID: crypto.randomUUID(),
+                JOBID: jobid,
+                TABLE_NAME: tableName,
+                TABLE_DESC: tableDesc || ('Created from sqltabs:\n' + query)
+            }, cookie, function(status, headers, text){
+                if (status === 401 && allowRetry && password){ // session expired -> re-login once
+                    delete Sessions[sessionKey(c)];
+                    tapLogin(connstr, password, function(fresh){ doUpload(fresh, false); }, function(e){ fail(e.msg || 'login failed'); });
+                    return;
+                }
+                if (status >= 200 && status < 300 && !/User must be logged in/i.test(text)){
+                    ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(text));
+                } else {
+                    fail('Upload failed: ' + uploadStatus(text));
+                }
+            }, function(e){ fail(e); });
+        }, fail);
+    };
+
+    ensureSession(connstr, password, function(cookie){
+        if (!cookie){ fail('Uploading a table requires a login; set a password for ' + c.user); return; }
+        doUpload(cookie, true);
+    }, function(e){ fail(e.msg || 'login failed'); });
+}
+
+// Upload an in-memory CSV as a user_<name> table by POSTing it as the multipart FILE part
+// (FORMAT=csv). Used for client-assembled data (e.g. DataLink products) that isn't a TAP
+// job. ok(message) / fail(message).
+function tapUploadFile(connstr, csvText, tableName, tableDesc, password, ok, fail){
+    var c = parseConn(connstr);
+    if (!c.user){ fail('Uploading a table requires an authenticated connection (e.g. gaia://<user>)'); return; }
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(tableName)){
+        fail('Invalid table name "' + tableName + '": use letters, digits and underscores, starting with a letter');
+        return;
+    }
+    var uploadUrl = (/\/tap$/.test(c.base) ? c.base.replace(/\/tap$/, '') : c.base) + '/Upload';
+
+    var doUpload = function(cookie, allowRetry){
+        httpPostMultipart(uploadUrl, {
+            TASKID: crypto.randomUUID(),
+            TABLE_NAME: tableName,
+            TABLE_DESC: tableDesc || ('Uploaded from sqltabs'),
+            FORMAT: 'csv'
+        }, cookie, function(status, headers, text){
+            if (status === 401 && allowRetry && password){
+                delete Sessions[sessionKey(c)];
+                tapLogin(connstr, password, function(fresh){ doUpload(fresh, false); }, function(e){ fail(e.msg || 'login failed'); });
+                return;
+            }
+            if (status >= 200 && status < 300 && !/User must be logged in/i.test(text)){
+                ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(text));
+            } else {
+                fail('Upload failed: ' + uploadStatus(text));
+            }
+        }, function(e){ fail(e); }, { name: tableName + '.csv', content: csvText, type: 'text/csv' });
+    };
+
+    ensureSession(connstr, password, function(cookie){
+        if (!cookie){ fail('Uploading a table requires a login; set a password for ' + c.user); return; }
+        doUpload(cookie, true);
+    }, function(e){ fail(e.msg || 'login failed'); });
+}
+
 var Response = function(query){
     this.connector_type = "tap";
     // default to '' so the renderer's query.replace(...)/match(...) calls are safe even
@@ -548,6 +758,40 @@ function csvDataset(csvText){
     var fields = header.map(function(name){ return { name: name, type: 'string' }; });
     var data = rows.slice(1);
     return { nrecords: data.length, fields: fields, explain: false, data: data, cmdStatus: null, resultStatus: null, resultErrorMessage: null };
+}
+
+// Serialize a result dataset back to RFC-4180 CSV (header + rows), quoting fields only
+// when needed. Used to re-upload a client-assembled dataset as a user table.
+function datasetToCSV(dataset){
+    var esc = function(v){
+        if (v == null){ return ''; }
+        v = String(v);
+        return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    };
+    var lines = [dataset.fields.map(function(f){ return esc(f.name); }).join(',')];
+    dataset.data.forEach(function(row){ lines.push(row.map(esc).join(',')); });
+    return lines.join('\n') + '\n';
+}
+
+// Project a dataset down to (and in the order of) the requested column names. Unknown
+// names are skipped (logged, not fatal); null/empty wantCols returns the dataset as-is.
+function projectColumns(dataset, wantCols){
+    if (!wantCols || !wantCols.length || !dataset || !dataset.fields){ return dataset; }
+    var lc = dataset.fields.map(function(f){ return String(f.name).toLowerCase(); });
+    var idxs = [], missing = [];
+    wantCols.forEach(function(name){
+        var i = lc.indexOf(name);
+        if (i >= 0){ idxs.push(i); } else { missing.push(name); }
+    });
+    if (missing.length){ console.log('datalink cols= unknown column(s) ignored: ' + missing.join(', ')); }
+    if (!idxs.length){ return dataset; } // nothing matched -> keep all rather than blank the grid
+    return {
+        nrecords: dataset.data.length,
+        fields: idxs.map(function(i){ return dataset.fields[i]; }),
+        explain: false,
+        data: dataset.data.map(function(row){ return idxs.map(function(i){ return row[i]; }); }),
+        cmdStatus: null, resultStatus: null, resultErrorMessage: null
+    };
 }
 
 var Database = {
@@ -574,6 +818,14 @@ var Database = {
     },
 
     runQuery: function(id, connstr, password, query, callback, err_callback){
+        // `--- upload <table_name>` promotes the block's query result to a server-side
+        // user_<name> table (run async, then create the table from the finished job).
+        var up = /^\s*---\s+upload\s+([A-Za-z][A-Za-z0-9_]*)/i.exec(query);
+        if (up){
+            this._runUpload(id, connstr, password, query, up[1], callback, err_callback);
+            return;
+        }
+
         // `--- datalink <retrieval_type> [release]` is an execution directive: run the
         // block's inner ADQL to collect source_ids, then fetch that DataLink product
         // (e.g. epoch photometry) for them and render the combined CSV. Release defaults
@@ -606,12 +858,23 @@ var Database = {
     _runDataLink: function(id, connstr, password, query, dlMatch, callback, err_callback){
         var retrievalType = dlMatch[1].toUpperCase();
         var release = (dlMatch[2] || 'Gaia DR3').replace(/^"|"$/g, ''); // strip optional quotes
+        var markerLine = query.split(/\r?\n/)[0] || '';
+        // Optional `cols=a,b,c` selects which DataLink columns to keep (default: all).
+        var colsMatch = /\bcols=([A-Za-z0-9_,]+)/i.exec(markerLine);
+        var wantCols = colsMatch ? colsMatch[1].split(',').map(function(s){ return s.trim().toLowerCase(); }).filter(Boolean) : null;
+        // Optional `upload=<table>` saves the fetched product as a user_<name> table
+        // (via file upload) instead of rendering it.
+        var upMatch = /\bupload=([A-Za-z][A-Za-z0-9_]*)/i.exec(markerLine);
+        var uploadName = upMatch ? upMatch[1] : null;
         // The inner ADQL is the block minus its marker line; it must return a source_id
-        // column. The leading `---` line is an ADQL comment, so we can send as-is, but we
-        // strip the marker so it can also be run async-large if needed in the future.
+        // column.
         var innerQuery = query.replace(/^\s*---\s+datalink\b.*\r?\n?/i, '');
-        // keep the render marker (chart/csv) for SqlDoc by re-deriving it from the marker tail
-        var renderQuery = query.replace(/^(\s*---\s+)datalink\s+\S+\s*(?:"[^"]*"|\S+)?\s*/i, '$1');
+        // keep the render marker (chart/csv) for SqlDoc by re-deriving it from the marker
+        // tail, dropping the datalink token, its release, and any cols=/upload= selectors.
+        var renderQuery = query
+            .replace(/^(\s*---\s+)datalink\s+\S+\s*(?:"[^"]*"|\S+)?\s*/i, '$1')
+            .replace(/\bcols=[A-Za-z0-9_,]+\s*/i, '')
+            .replace(/\bupload=[A-Za-z][A-Za-z0-9_]*\s*/i, '');
         var response = new Response(renderQuery);
 
         // 1) run the inner query to get source_ids
@@ -627,12 +890,44 @@ var Database = {
                 var v = rows[r][sidCol];
                 if (v != null && v !== '' && !seen[v]){ seen[v] = 1; ids.push(v); }
             }
-            // 2) fetch the DataLink product for those ids and render the combined CSV
+            // 2) fetch the DataLink product for those ids
             tapDataLink(connstr, ids, retrievalType, release, password, function(dlCsv){
+                var dataset = projectColumns(csvDataset(dlCsv), wantCols);
+                if (uploadName){
+                    // save the fetched product as a user table instead of rendering it
+                    tapUploadFile(connstr, datasetToCSV(dataset), uploadName,
+                        'DataLink ' + retrievalType + ' (' + release + ') from sqltabs', password,
+                        function(message){
+                            response.finish();
+                            response.datasets.push({ nrecords: 1, explain: false,
+                                fields: [{ name: 'upload', type: 'string' }], data: [[message]],
+                                cmdStatus: null, resultStatus: null, resultErrorMessage: null });
+                            callback(id, [response]);
+                        },
+                        function(msg){ err_callback(id, msg); });
+                    return;
+                }
                 response.finish();
-                response.datasets.push(csvDataset(dlCsv));
+                response.datasets.push(dataset);
                 callback(id, [response]);
             }, function(msg){ err_callback(id, msg); });
+        }, function(msg){ err_callback(id, msg); });
+    },
+
+    _runUpload: function(id, connstr, password, query, tableName, callback, err_callback){
+        // the query is the block minus its marker line
+        var innerQuery = query.replace(/^\s*---\s+upload\b.*\r?\n?/i, '');
+        var response = new Response(query);
+        tapUpload(connstr, innerQuery, tableName, null, password, function(message){
+            response.finish();
+            // surface the outcome as a one-row, one-column result so the user sees confirmation
+            response.datasets.push({
+                nrecords: 1, explain: false,
+                fields: [{ name: 'upload', type: 'string' }],
+                data: [[message]],
+                cmdStatus: null, resultStatus: null, resultErrorMessage: null
+            });
+            callback(id, [response]);
         }, function(msg){ err_callback(id, msg); });
     },
 

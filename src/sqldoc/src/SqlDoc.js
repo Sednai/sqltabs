@@ -297,7 +297,12 @@ var SqlDoc = React.createClass({
                 var datasets = this.state.data[block_idx].datasets.map(function(dataset, i){
                     var dsid = self.dsid(block_idx, i);
                     self.rendered_records[dsid] = 0;
-                    return renderer(block_idx, dataset, i, self.state.data[block_idx].query);
+                    var rendered = renderer(block_idx, dataset, i, self.state.data[block_idx].query);
+                    // ensure every dataset element is keyed (some renderers, e.g. renderChart,
+                    // don't set their own key) so React doesn't warn on the array.
+                    return (rendered && rendered.key == null)
+                        ? React.cloneElement(rendered, { key: 'dataset_' + dsid })
+                        : rendered;
                 });
 
                 var header = this.getHeader(this.state.data[block_idx].query);

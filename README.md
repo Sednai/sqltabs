@@ -188,18 +188,45 @@ FROM user_dr4rc3.vari_long_period_variable
 WHERE score_lpv > 0.9
 ```
 
-- **Syntax:** `--- datalink <retrieval_type> [release] [render-marker]`
+- **Syntax:** `--- datalink <retrieval_type> [release] [cols=a,b,c] [render-marker]`
 - **`<retrieval_type>`** — e.g. `epoch_photometry`, `epoch_rv` (case-insensitive).
 - **`[release]`** — the dataset release token, **quoted if it contains a space**.
   Defaults to `"Gaia DR3"`; the pre-release archive uses e.g. `"Gaia DR4_RC3"`.
+- **`cols=a,b,c`** — keep only these columns (comma-separated, no spaces), in the
+  given order. Omit to return all columns. Unknown names are ignored.
+- **`upload=<table_name>`** — instead of rendering, save the fetched product as a
+  `user_<name>.<table_name>` table (so light curves can be JOINed later), e.g.
+  `--- datalink epoch_photometry "Gaia DR4_RC3" cols=source_id,g_obs_time,g_mag upload=my_lightcurves`.
 - Composes with a render marker, so `--- datalink epoch_photometry "Gaia DR4_RC3"
-  chart scatter` plots the light curve.
+  cols=source_id,g_obs_time,g_mag chart scatter` plots a trimmed light curve.
 - **Authentication:** DataLink uses the archive's separate data-server login
   (handled automatically from your connection's saved credentials); proprietary
   releases like DR4 require an authenticated `gaia://<user>` / `gaiapre://<user>`
   connection.
 - Sources are fetched individually and combined; a run is capped at 5000 sources
   (narrow the query or split it for more).
+
+### Saving results as a TAP user table
+
+`--- upload <table_name>` saves a query's result back to the archive as a
+`user_<name>.<table_name>` table, **server-side** (the query runs as an async job
+and its result is promoted — no data is re-uploaded from the client). You can
+then JOIN against it in later queries, exactly like the archive's web "upload"
+feature.
+
+```adql
+--- upload my_bright_sample
+SELECT source_id, ra, dec, phot_g_mean_mag
+FROM gaiadr3.gaia_source
+WHERE phot_g_mean_mag < 8
+```
+
+- The table name must start with a letter and contain only letters, digits and
+  underscores.
+- Requires an authenticated connection (`gaia://<user>` / `gaiapre://<user>`);
+  the new table appears as `user_<user>.<table_name>`.
+- The block reports the outcome as a one-row result; query the new table in a
+  following block to use it.
 
 ## SQL documents: block directives
 
@@ -214,12 +241,12 @@ after `---` on that line selects how the block's result is rendered:
 | `--- csv` | raw comma-separated values |
 | `--- hidden` | nothing (run for side effects) |
 
-For TAP/ADQL connections two further prefixes change **how the block is
-executed** rather than how it is rendered, so each composes with a render
-directive: `--- async` runs via the asynchronous `/async` endpoint (e.g.
-`--- async chart line`), and `--- datalink <type> [release]` retrieves a
-per-source DataLink product such as epoch photometry (e.g.
-`--- datalink epoch_photometry "Gaia DR4_RC3" chart scatter`). See
+For TAP/ADQL connections further prefixes change **how the block is executed**
+rather than how it is rendered: `--- async` runs via the asynchronous `/async`
+endpoint (e.g. `--- async chart line`), `--- datalink <type> [release]` retrieves
+a per-source DataLink product such as epoch photometry (e.g.
+`--- datalink epoch_photometry "Gaia DR4_RC3" chart scatter`), and
+`--- upload <table_name>` saves the result as a `user_<name>` table. See
 [Gaia / IVOA TAP](#gaia--ivoa-tap-archives).
 
 You can also embed Markdown anywhere with `/** ... **/` blocks (rendered as
