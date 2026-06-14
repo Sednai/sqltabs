@@ -291,4 +291,4 @@ More runnable examples live in [`examples/`](examples/).
 
 ## License
 
-GPL-3.0. Original work © Aliaksandr Aliashkevich; see [LICENSE](LICENSE).
+GPL-3.0. Original work © Aliaksandr Aliashkevich;Sednai Sarl see [LICENSE](LICENSE).
