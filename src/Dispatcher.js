@@ -396,6 +396,14 @@ DBDispatcher.register(function(payload){
         case 'query-finished':
             TabsStore.setResult(payload.key, payload.result);
             TabsStore.trigger('query-finished-'+payload.key);
+            // `--- csv <file>` / `--- json <file>` markers also write the block to disk.
+            var exp = TabsStore.saveMarkedExports(payload.result);
+            exp.saved.forEach(function(f){ console.log('saved export: ' + f); });
+            exp.errors.forEach(function(e){ console.error('export error: ' + e); });
+            try {
+                if (exp.errors.length){ new Notification('SQL Tabs — export failed', { body: exp.errors.join('; ') }); }
+                else if (exp.saved.length){ new Notification('SQL Tabs', { body: 'Saved ' + exp.saved.join(', ') }); }
+            } catch (e){ /* notifications optional */ }
             break;
 
         case 'query-error':

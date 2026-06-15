@@ -20,6 +20,8 @@ var MicroEvent = require('microevent');
 var Config = require('./Config');
 var SessionStore = require('./SessionStore');
 var fs = require('fs');
+var os = require('os');
+var path = require('path');
 var EOL = require('os').EOL;
 var Executor = require('./Executor');
 var ShareHistory = require('./ShareHistory');
@@ -97,6 +99,16 @@ function resultToCSV(result){
 function resultToQuery(result){
     return result.map(function(b){ return (b.query || '').trim(); })
                  .filter(Boolean).join(EOL + EOL) + EOL;
+}
+
+// Resolve an export path from a `--- csv <file>` marker: strip surrounding quotes, expand
+// a leading ~, and resolve a relative path against the user's home directory (cwd is the
+// app dir, which is rarely what the user means).
+function resolveExportPath(p){
+    p = String(p || '').trim().replace(/^["']|["']$/g, '');
+    if (p === '~' || p.indexOf('~/') === 0){ p = path.join(os.homedir(), p.slice(1)); }
+    if (!path.isAbsolute(p)){ p = path.join(os.homedir(), p); }
+    return p;
 }
 
 var Tab = function(id, connstr){
@@ -574,6 +586,33 @@ var _TabsStore = function(){
             query: resultToQuery(result),
             queryFile: isAdql ? 'query.adql' : 'query.sql',
         };
+    };
+
+    // Write any result block that carries a `--- csv <file>` or `--- json <file>` marker to
+    // that local path, reusing the same serialization as the manual export. Returns
+    // {saved:[paths], errors:[messages]}. A bare `--- csv` (no filename) only affects
+    // rendering and is left untouched.
+    this.saveMarkedExports = function(result){
+        var saved = [], errors = [];
+        if (!result || !result.length){ return { saved: saved, errors: errors }; }
+        for (var i = 0; i < result.length; i++){
+            var block = result[i];
+            var firstLine = (block.query || '').split(/\r?\n/)[0] || '';
+            var m = /^\s*---\s+(csv|json)\s+(\S.*?)\s*$/i.exec(firstLine);
+            if (!m){ continue; }
+            var fmt = m[1].toLowerCase();
+            var file = resolveExportPath(m[2]);
+            try {
+                var content = (fmt === 'json')
+                    ? JSON.stringify(block.datasets, null, 2)
+                    : resultToCSV([block]);
+                fs.writeFileSync(file, content);
+                saved.push(file);
+            } catch (e){
+                errors.push(file + ': ' + e.message);
+            }
+        }
+        return { saved: saved, errors: errors };
     };
 
     // Remembers what is being shared so it can be recorded once the upload succeeds.
