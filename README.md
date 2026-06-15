@@ -13,21 +13,22 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 - Sednai **PG-XZ**
 - **PostgreSQL**
 - **Amazon Redshift** (use a `redshift://` connection string)
-- **IVOA TAP / ADQL** services such as the **ESA Gaia archive** — query
+- **IVOA TAP / ADQL** services such as the **ESA Gaia archive** - query
   astronomical catalogs over HTTP with ADQL (use `gaia://`, `gaiapre://`,
   `tap://` or `taps://`; see [Gaia / IVOA TAP](#gaia--ivoa-tap-archives) below)
-- **AlaSQL** — a small in-process SQL engine used for scratch/`about:` tabs
+- **AlaSQL** - a small in-process SQL engine used for scratch/`about:` tabs
 
 ## Supported platforms
 
 - Linux
 - macOS
+- Windows (not tested)
 
 ## Features
 
 - Multi-tab SQL editor (Ace) with an optional **Vim** keybinding mode
 - Schema-aware **autocompletion**
-- Result grids with lazy rendering, sorting, and CSV/JSON export — including
+- Result grids with lazy rendering, sorting, and CSV/JSON export - including
   `--- csv <file>` / `--- json <file>` block markers that **save results to disk**
 - **Charts** rendered inline with [c3.js](https://c3js.org) (see below)
 - **Cross-tables**, raw **CSV** view, and **Markdown** documentation blocks
@@ -37,7 +38,7 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
   local **shared-queries history** (see below)
 - Query **history**, and a persistent **Vim** command/search history
 - **SSH tunneling** to reach databases behind a bastion host
-- **Autosave & session restore** — open tabs and unsaved editor content are
+- **Autosave & session restore** - open tabs and unsaved editor content are
   persisted to `~/.sqltabs/session.json` and restored on the next start
 
 ## Running from source
@@ -56,7 +57,7 @@ npm start          # launches the app (dev mode)
 
 ## Building installers
 
-No native modules are used, so packaging is just Electron + JS — there are no
+No native modules are used, so packaging is just Electron + JS - there are no
 per-platform native rebuilds. Installers are produced with
 [electron-builder](https://www.electron.build) into `dist/`.
 
@@ -68,10 +69,6 @@ npm run dist:linux        # AppImage + deb + rpm
 npx electron-builder --linux AppImage rpm --publish never
 ```
 
-The **`.AppImage`** builds with no extra setup. Building **`.rpm`** or **`.deb`**
-locally on Fedora also needs electron-builder's `fpm` compat libraries (Fedora 43
-dropped `libcrypt.so.1`), plus `dpkg` for the deb:
-
 ```bash
 sudo dnf install libxcrypt-compat dpkg fakeroot
 ```
@@ -79,7 +76,7 @@ sudo dnf install libxcrypt-compat dpkg fakeroot
 The **macOS `.dmg`** can only be built on a Mac. If building rpm/deb locally is
 inconvenient, build everything in CI instead (below).
 
-**All platforms via CI** — the included GitHub Actions workflow
+**All platforms via CI** - the included GitHub Actions workflow
 ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds Linux
 (AppImage + deb + rpm on `ubuntu-latest`), macOS (dmg on `macos-latest`) and
 Windows (nsis `.exe` on `windows-latest`). Trigger it from the **Actions** tab
@@ -92,7 +89,7 @@ git push origin v1.3.0
 ```
 
 A tagged run gathers every installer and creates a **draft GitHub Release** with
-them attached — review it under *Releases* and click *Publish*. This is the
+them attached - review it under *Releases* and click *Publish*. This is the
 easiest way to build the macOS and Windows installers without owning those
 machines.
 
@@ -127,7 +124,7 @@ redshift://user:password@host:5439/dbname
 
 Besides SQL databases, SQL Tabs can query any
 [IVOA **TAP**](https://www.ivoa.net/documents/TAP/) (Table Access Protocol)
-service that speaks **ADQL** over HTTP — most notably the **ESA Gaia archive**.
+service that speaks **ADQL** over HTTP - most notably the **ESA Gaia archive**.
 Results are fetched as CSV so values arrive as exact text, which matters because
 Gaia `source_id` is a 64-bit integer that JSON's doubles would corrupt.
 
@@ -142,7 +139,8 @@ Gaia `source_id` is a 64-bit integer that JSON's doubles would corrupt.
 
 `gaia://` and `gaiapre://` are shortcuts for the ESA endpoints; for any other
 archive give the full host and TAP path, e.g.
-`taps://geapre.esac.esa.int/tap-server/tap`.
+`taps://geapre.esac.esa.int/tap-server/tap`
+`tap://tapvizier.cds.unistra.fr/TAPVizieR/tap` fior Vizier.
 
 ```adql
 --- a few bright Gaia DR3 sources
@@ -164,7 +162,7 @@ uploaded results) in `TAP_SCHEMA`.
 ### Notes specific to ADQL
 
 - **Top-N** uses `SELECT TOP n ...` (not `LIMIT`).
-- **String literals use single quotes** — `WHERE flag = 'false'`. Double quotes
+- **String literals use single quotes** - `WHERE flag = 'false'`. Double quotes
   mean *identifiers* in ADQL, so `"false"` is read as a column name.
 - **`Ctrl/Cmd+I`** on a table name shows its columns (name, datatype, unit,
   description) from `TAP_SCHEMA`, falling back to a `SELECT TOP 0` probe for
@@ -179,8 +177,9 @@ uploaded results) in `TAP_SCHEMA`.
 ### Time series (DataLink)
 
 Per-source products such as **epoch photometry** (light curves) and **epoch
-radial velocity** are not returned by an ADQL `SELECT` — they are served through
-the IVOA **DataLink** protocol. The `--- datalink` block marker bridges the two:
+radial velocity** are not returned by an ADQL `SELECT` - they are served through
+the IVOA **DataLink** protocol. 
+The `--- datalink` block marker bridges the two:
 it runs the block's ADQL to collect `source_id`s, then downloads the requested
 DataLink product for them and renders the combined result.
 
@@ -192,13 +191,13 @@ WHERE score_lpv > 0.9
 ```
 
 - **Syntax:** `--- datalink <retrieval_type> [release] [cols=a,b,c] [render-marker]`
-- **`<retrieval_type>`** — the product to fetch (case-insensitive); see the table
+- **`<retrieval_type>`** - the product to fetch (case-insensitive); see the table
   of Gaia products below.
-- **`[release]`** — the dataset release token, **quoted if it contains a space**.
+- **`[release]`** - the dataset release token, **quoted if it contains a space**.
   Defaults to `"Gaia DR3"`; the pre-release archive uses e.g. `"Gaia DR4_RC3"`.
-- **`cols=a,b,c`** — keep only these columns (comma-separated, no spaces), in the
+- **`cols=a,b,c`** - keep only these columns (comma-separated, no spaces), in the
   given order. Omit to return all columns. Unknown names are ignored.
-- **`upload=<table_name>`** — instead of rendering, save the fetched product as a
+- **`upload=<table_name>`** - instead of rendering, save the fetched product as a
   `user_<name>.<table_name>` table (so light curves can be JOINed later), e.g.
   `--- datalink epoch_photometry "Gaia DR4_RC3" cols=source_id,g_obs_time,g_mag upload=my_lightcurves`.
 - Composes with a render marker, so `--- datalink epoch_photometry "Gaia DR4_RC3"
@@ -214,7 +213,7 @@ WHERE score_lpv > 0.9
 
 These `retrieval_type` tokens are available (verified against the Gaia DR4_RC3
 pre-release archive; DR3 exposes the same products where published). ZIP-format
-products are unpacked automatically.
+products are unpacked and rendered automatically.
 
 | `retrieval_type` | Product | Format |
 |------------------|---------|--------|
@@ -228,14 +227,14 @@ products are unpacked automatically.
 | `MEAN_SPECTRUM_RVS` | RVS mean spectrum | CSV |
 
 The exact set depends on the release and the source; availability and naming are
-defined by the archive, not by SQL Tabs — any token the service accepts will work
+defined by the archive, not by SQL Tabs - any token the service accepts will work
 here. (Some products are only present for sources that have that data.)
 
 ### Saving results as a TAP user table
 
 `--- upload <table_name>` saves a query's result back to the archive as a
 `user_<name>.<table_name>` table, **server-side** (the query runs as an async job
-and its result is promoted — no data is re-uploaded from the client). You can
+and its result is promoted - no data is re-uploaded from the client). You can
 then JOIN against it in later queries, exactly like the archive's web "upload"
 feature.
 
@@ -263,13 +262,13 @@ query (`query.sql`, or `query.adql` for TAP/ADQL connections) to a
   editing"**, and copy the resulting link (e.g. `https://cloud.example.com/s/TOKEN`).
 - The first time you share, sqltabs asks for that link (and an optional link
   password); it is saved and reused afterwards. You can change it later under
-  **Settings → Share link**.
+  **Settings/Share link**.
 - Each share goes into a timestamped subfolder named after the connection,
   `user_server_date_time/` (TAP connections resolve their real archive host, e.g.
   `knienart_geapre.esac.esa.int_2026-06-15_143907`), and the folder link is
   **copied to your clipboard**.
 - Shared queries are remembered locally in `~/.sqltabs/shared_queries.json` and can
-  be browsed with **`Ctrl/Cmd+Shift+Y`** — reload one into the editor, open it in
+  be browsed with **`Ctrl/Cmd+Shift+Y`** - reload one into the editor, open it in
   the browser, or copy its link.
 
 ## SQL documents: block directives
@@ -285,7 +284,7 @@ after `---` on that line selects how the block's result is rendered:
 | `--- csv` | raw comma-separated values |
 | `--- hidden` | nothing (run for side effects) |
 
-Adding a filename — `--- csv <file>` or `--- json <file>` — also **writes that
+Adding a filename - `--- csv <file>` or `--- json <file>` - also **writes that
 block's result to the local path** when the query finishes (CSV uses the same
 quoting as the manual export; JSON saves the block's datasets). A leading `~`
 expands to your home directory and relative paths resolve against it, e.g.
@@ -304,11 +303,11 @@ documentation above/below the result).
 
 ### Charts
 
-Yes — charts are supported. Start a block with `--- chart <type>`; the **first
-column is the x-axis** and each remaining **numeric column is a series**.
+Charts are supported with C3.js. Start a block with `--- chart <type>`; 
+The **first column is the x-axis** and each remaining **numeric column is a series**.
 `<type>` is any [c3 chart type](https://c3js.org/examples.html): `line`
 (default), `spline`, `area`, `area-spline`, `bar`, `scatter`, `pie`, `donut`,
-`gauge`, …
+`gauge`, 
 
 ```sql
 --- chart area-spline
@@ -331,6 +330,7 @@ More runnable examples live in [`examples/`](examples/).
 |--------|----------|
 | Run script | `Ctrl/Cmd+R` |
 | Execute block | `Ctrl/Cmd+E` |
+| Cancel running block | `Ctrl/Cmd+B` |
 | Execute all blocks | `Ctrl/Cmd+Shift+E` |
 | Auto-format block / all | `Ctrl/Cmd+K` / `Ctrl/Cmd+Shift+K` |
 | Object info under cursor | `Ctrl/Cmd+I` |
