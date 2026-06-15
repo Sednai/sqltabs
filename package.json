@@ -1,6 +1,6 @@
 {
   "name": "sqltabs",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "author": "Sednai Sàrl <sqltabs@sedn.ai>",
   "description": "SQL Tabs - a browser for databases",
   "repository": {

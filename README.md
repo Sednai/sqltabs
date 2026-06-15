@@ -27,12 +27,15 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 
 - Multi-tab SQL editor (Ace) with an optional **Vim** keybinding mode
 - Schema-aware **autocompletion**
-- Result grids with lazy rendering, sorting, and CSV/JSON export
+- Result grids with lazy rendering, sorting, and CSV/JSON export — including
+  `--- csv <file>` / `--- json <file>` block markers that **save results to disk**
 - **Charts** rendered inline with [c3.js](https://c3js.org) (see below)
 - **Cross-tables**, raw **CSV** view, and **Markdown** documentation blocks
 - **Object / database info** browser (tables, columns, indexes, constraints,
   functions, triggers, …), compatible with PostgreSQL 10 → current
-- Query **history**
+- **Share** a result (CSV + query) to a Nextcloud/ownCloud public folder, with a
+  local **shared-queries history** (see below)
+- Query **history**, and a persistent **Vim** command/search history
 - **SSH tunneling** to reach databases behind a bastion host
 - **Autosave & session restore** — open tabs and unsaved editor content are
   persisted to `~/.sqltabs/session.json` and restored on the next start
@@ -250,6 +253,25 @@ WHERE phot_g_mean_mag < 8
 - The block reports the outcome as a one-row result; query the new table in a
   following block to use it.
 
+## Sharing results
+
+The **share** button under a result uploads the result (as `results.csv`) and its
+query (`query.sql`, or `query.adql` for TAP/ADQL connections) to a
+**Nextcloud/ownCloud public folder** over WebDAV.
+
+- In Nextcloud, create a folder, share it publicly with **"Allow upload and
+  editing"**, and copy the resulting link (e.g. `https://cloud.example.com/s/TOKEN`).
+- The first time you share, sqltabs asks for that link (and an optional link
+  password); it is saved and reused afterwards. You can change it later under
+  **Settings → Share link**.
+- Each share goes into a timestamped subfolder named after the connection,
+  `user_server_date_time/` (TAP connections resolve their real archive host, e.g.
+  `knienart_geapre.esac.esa.int_2026-06-15_143907`), and the folder link is
+  **copied to your clipboard**.
+- Shared queries are remembered locally in `~/.sqltabs/shared_queries.json` and can
+  be browsed with **`Ctrl/Cmd+Shift+Y`** — reload one into the editor, open it in
+  the browser, or copy its link.
+
 ## SQL documents: block directives
 
 A script is split into blocks separated by lines beginning with `---`. The text
@@ -262,6 +284,12 @@ after `---` on that line selects how the block's result is rendered:
 | `--- crosstable` | a pivoted cross-table |
 | `--- csv` | raw comma-separated values |
 | `--- hidden` | nothing (run for side effects) |
+
+Adding a filename — `--- csv <file>` or `--- json <file>` — also **writes that
+block's result to the local path** when the query finishes (CSV uses the same
+quoting as the manual export; JSON saves the block's datasets). A leading `~`
+expands to your home directory and relative paths resolve against it, e.g.
+`--- csv ~/gaia/pleiades.csv`. A bare `--- csv` (no filename) stays render-only.
 
 For TAP/ADQL connections further prefixes change **how the block is executed**
 rather than how it is rendered: `--- async` runs via the asynchronous `/async`
@@ -309,6 +337,7 @@ More runnable examples live in [`examples/`](examples/).
 | Edit connection string | `Ctrl/Cmd+L` |
 | Find | `Ctrl/Cmd+F` |
 | History | `Ctrl+H` / `Cmd+Y` |
+| Shared queries | `Ctrl/Cmd+Shift+Y` |
 | New / close tab | `Ctrl/Cmd+T` / `Ctrl/Cmd+W` |
 
 ## License
