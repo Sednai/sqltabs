@@ -366,12 +366,24 @@ var Actions = {
         });
     },
 
-    share: function(target_server, encrypt, encryptionKey){
+    toggleSharedQueries: function(){
+        AppDispatcher.dispatch({
+            eventName: 'toggle-shared-queries',
+        });
+    },
+
+    insertText: function(text){
+        AppDispatcher.dispatch({
+            eventName: 'insert-text',
+            text: text,
+        });
+    },
+
+    share: function(shareUrl, sharePassword){
         AppDispatcher.dispatch({
             eventName: 'share',
-            targetServer: target_server,
-            encrypt,
-            encryptionKey,
+            shareUrl: shareUrl,
+            sharePassword: sharePassword,
             callback: ShareCallback,
             err_callback: ShareErrorCallback,
         });

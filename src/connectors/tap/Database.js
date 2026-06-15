@@ -402,6 +402,16 @@ function ensureDataSession(connstr, password, ok, fail){
     ok(null);
 }
 
+// Normalize an ADQL block before sending it to the TAP service. The block can end with a
+// `--` line comment (e.g. a trailing note under the query); without a terminating newline
+// the Gaia ADQL parser treats the unterminated comment as a syntax error and returns
+// HTTP 500. Trimming trailing whitespace and appending a single newline guarantees any
+// trailing line comment is closed. (`--` is a comment, so the leading `--- marker` line is
+// already ignored by the service.)
+function normalizeAdql(query){
+    return (query || '').replace(/\s+$/, '') + '\n';
+}
+
 // POST an ADQL query to /sync. ok(bodyText) / fail(message). Re-logs-in once on a 401 when a
 // password is available (session expired); id (optional) makes the request cancellable.
 // format defaults to 'csv'; pass 'votable' to get the typed VOTABLE document (the body is
@@ -410,7 +420,7 @@ function tapSync(connstr, query, password, id, ok, fail, format){
     var c = parseConn(connstr);
     var fmt = format || 'csv';
     var run = function(cookie, allowRetry){
-        httpPost(c.base + '/sync', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: fmt, QUERY: query }, cookie, id,
+        httpPost(c.base + '/sync', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: fmt, QUERY: normalizeAdql(query) }, cookie, id,
             function(status, headers, text){
                 if (status === 401 && c.user && password && allowRetry){ // session expired -> re-login once
                     delete Sessions[sessionKey(c)];
@@ -470,7 +480,7 @@ function tapAsync(connstr, query, password, id, ok, fail, triedRelogin){
 
         // PHASE=RUN creates the job already running, so no separate start POST is needed.
         // The 303 redirect's Location header carries the job URL.
-        httpPost(c.base + '/async', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: 'csv', PHASE: 'RUN', QUERY: query }, cookie, null,
+        httpPost(c.base + '/async', { REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: 'csv', PHASE: 'RUN', QUERY: normalizeAdql(query) }, cookie, null,
             function(status, headers, text){
                 if (status === 401 && c.user && password && !triedRelogin){ // session expired -> re-login once, retry job
                     delete Sessions[sessionKey(c)];
@@ -795,6 +805,18 @@ function projectColumns(dataset, wantCols){
 }
 
 var Database = {
+
+    connector_type: "tap",
+
+    // Resolve a connstr to its login user and real archive host, applying the same
+    // scheme->host mapping the connector uses (gaia://->gea.esac.esa.int,
+    // gaiapre://->geapre.esac.esa.int, tap(s)://host... -> host). Used e.g. to name a
+    // share folder after the actual server rather than the shortcut scheme.
+    parseConnInfo: function(connstr){
+        var c = parseConn(connstr);
+        var hm = /^https?:\/\/([^/]+)/i.exec(c.base || '');
+        return { user: c.user || null, host: hm ? hm[1] : (c.base || '') };
+    },
 
     testConnection: function(id, connstr, password, callback, ask_password_callback, err_callback){
         var c = parseConn(connstr);

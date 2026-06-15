@@ -269,6 +269,10 @@ if (process.platform == 'darwin'){
              accelerator: "Command+Y",
              click: Actions.toggleHistory,
             },
+            {label: "Shared Queries",
+             accelerator: "Command+Shift+Y",
+             click: Actions.toggleSharedQueries,
+            },
          ]
         },
         {label: "Window", submenu:[
@@ -392,6 +396,10 @@ if (process.platform == 'darwin'){
             {label: "History",
              accelerator: "Ctrl+H",
              click: function(){Actions.toggleHistory()},
+            },
+            {label: "Shared Queries",
+             accelerator: "Ctrl+Shift+Y",
+             click: function(){Actions.toggleSharedQueries()},
             },
          ]
         },

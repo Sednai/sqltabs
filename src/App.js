@@ -32,6 +32,7 @@ var TabsNav = require('./TabsNav');
 var TabsStore = require('./TabsStore');
 var TabContainer = require('./TabContainer');
 var HistoryCarousel = require('./HistoryCarousel');
+var SharedQueries = require('./SharedQueries');
 var Config = require('./Config');
 var Actions = require('./Actions');
 var CloudMessage = require('./CloudMessage');
@@ -79,6 +80,7 @@ var App = React.createClass({
                 <PasswordDialog/>
                 <About/>
                 <HistoryCarousel/>
+                <SharedQueries/>
                 <CloudMessage/>
                 <UpgradeMessage/>
             </div>

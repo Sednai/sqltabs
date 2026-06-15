@@ -22,6 +22,7 @@ var SessionStore = require('./SessionStore');
 var fs = require('fs');
 var EOL = require('os').EOL;
 var Executor = require('./Executor');
+var ShareHistory = require('./ShareHistory');
 
 var Sequence = function(start){
     this.curval = start;
@@ -32,6 +33,71 @@ var Sequence = function(start){
 }
 
 var TabSequence = new Sequence(0);
+
+// --- helpers for sharing a result to a Nextcloud/ownCloud folder -----------------
+
+// Pull the connection user and server out of a connstr so the share subfolder can be
+// named after them. Handles both "scheme://user@host:port/db" (postgres etc.) and
+// "scheme://user" (Gaia/TAP, where the host is implied by the scheme). A "--- alias"
+// suffix is ignored.
+function parseUserHost(connstr){
+    var s = (connstr || '').split('---')[0].trim();
+    var sm = /^([a-z0-9+]+):\/\//i.exec(s);
+    var scheme = sm ? sm[1] : '';
+    var m = /^[a-z0-9+]+:\/\/([^/?#]+)/i.exec(s);
+    var authority = m ? m[1] : s;
+    var user = 'anon', host = '';
+    var at = authority.indexOf('@');
+    if (at !== -1){ // user@host
+        user = authority.slice(0, at).split(':')[0] || 'anon';
+        host = authority.slice(at + 1).split('/')[0].split(':')[0];
+    } else { // scheme://user  (no explicit host) -> authority is the user
+        user = authority.split('/')[0].split(':')[0] || 'anon';
+    }
+    return { user: user, server: host || scheme || 'server' };
+}
+
+// Keep folder/file names to safe WebDAV characters.
+function sanitizeName(s){
+    return String(s == null ? '' : s).replace(/[^A-Za-z0-9._-]/g, '-');
+}
+
+// Local timestamp as YYYY-MM-DD_HHMMSS for a per-share, never-overwriting folder.
+function shareTimestamp(){
+    var d = new Date();
+    var p = function(n){ return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+           '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+// Serialize all result blocks/datasets to a single CSV string (same quoting rules as the
+// file export: quote only values that contain a comma, quote, or newline; NULL for null).
+function resultToCSV(result){
+    var out = [];
+    for (var i = 0; i < result.length; i++){
+        var block = result[i];
+        if (!block.datasets){ continue; }
+        for (var j = 0; j < block.datasets.length; j++){
+            var dataset = block.datasets[j];
+            if (!dataset.fields){ continue; }
+            out.push(dataset.fields.map(function(f){ return '"' + f.name + '"'; }).join());
+            (dataset.data || []).forEach(function(record){
+                out.push(record.map(function(col){
+                    if (col == null){ return 'NULL'; }
+                    if (/[",\r\n]/.test(col)){ return '"' + String(col).replace(/"/g, '""') + '"'; }
+                    return col;
+                }).join());
+            });
+        }
+    }
+    return out.join(EOL) + EOL;
+}
+
+// Concatenate the queries of every result block.
+function resultToQuery(result){
+    return result.map(function(b){ return (b.query || '').trim(); })
+                 .filter(Boolean).join(EOL + EOL) + EOL;
+}
 
 var Tab = function(id, connstr){
     this.id = id;
@@ -482,6 +548,60 @@ var _TabsStore = function(){
         }
 
     }
+
+    // Build everything needed to share the active tab's result to a Nextcloud folder:
+    // a subfolder name (user_server_date_time) plus the CSV and query text. Returns null
+    // when there's no result to share.
+    this.getSharePayload = function(){
+        var id = this.selectedTab;
+        var result = this.getResult(id);
+        if (result == null || result.length === 0){ return null; }
+        var connstr = this.getConnstr(id);
+        var connector = Executor.getConnector(connstr);
+        var isAdql = !!(connector && connector.connector_type === 'tap');
+        // For TAP/ADQL connections use the connector's own parsing so the real archive
+        // host is used (gaia://->gea..., gaiapre://->geapre...), and save the query as .adql.
+        var info;
+        if (isAdql && typeof connector.parseConnInfo === 'function'){
+            var ci = connector.parseConnInfo(connstr);
+            info = { user: ci.user || 'anon', server: ci.host || 'tap' };
+        } else {
+            info = parseUserHost(connstr);
+        }
+        return {
+            folderName: sanitizeName(info.user) + '_' + sanitizeName(info.server) + '_' + shareTimestamp(),
+            csv: resultToCSV(result),
+            query: resultToQuery(result),
+            queryFile: isAdql ? 'query.adql' : 'query.sql',
+        };
+    };
+
+    // Remembers what is being shared so it can be recorded once the upload succeeds.
+    this.pendingShare = null;
+
+    // Append a successfully-shared query to the local shared-queries history
+    // (stored in ~/.sqltabs/shared_queries.json).
+    this.recordSharedQuery = function(link){
+        if (this.pendingShare == null){ return; }
+        ShareHistory.push({
+            time: new Date().getTime(),
+            link: link,
+            folder: this.pendingShare.folderName,
+            query: this.pendingShare.query,
+            connstr: this.pendingShare.connstr,
+        });
+        this.pendingShare = null;
+        this.trigger('shared-queries-changed');
+    };
+
+    this.getSharedQueries = function(){
+        return ShareHistory.all();
+    };
+
+    this.clearSharedQueries = function(){
+        ShareHistory.clear();
+        this.trigger('shared-queries-changed');
+    };
 
     this.getConnectionColor = function(connstr){
         if (connstr == null){

@@ -62,6 +62,8 @@ SignalsDispatcher.register(function(payload){
         case 'doc-shared':
             TabsStore.setCloudDoc(payload.docid);
             TabsStore.setCloudError(null);
+            TabsStore.recordSharedQuery(payload.docid);
+            try { require('electron').clipboard.writeText(payload.docid); } catch (e){ /* clipboard optional */ }
             TabsStore.trigger('cloud-message');
             break;
         case 'doc-shared-error':
@@ -312,6 +314,15 @@ AppDispatcher.register( function(payload) {
             TabsStore.trigger('paste-history-item-'+TabsStore.selectedTab);
             break;
 
+        case 'toggle-shared-queries':
+            TabsStore.trigger('toggle-shared-queries');
+            break;
+
+        case 'insert-text':
+            TabsStore.insertBuffer = payload.text;
+            TabsStore.trigger('insert-text-'+TabsStore.selectedTab);
+            break;
+
         case 'reread-config':
             TabsStore.rereadConfig();
             TabsStore.trigger('change-theme');
@@ -324,10 +335,22 @@ AppDispatcher.register( function(payload) {
             break;
 
         case 'share':
-            var result = TabsStore.getResult(TabsStore.selectedTab);
+            var sharePayload = TabsStore.getSharePayload();
+            if (sharePayload == null){
+                payload.err_callback('Nothing to share: run a query first.');
+                break;
+            }
+            Config.saveShareUrl(payload.shareUrl);
+            Config.saveSharePassword(payload.sharePassword || '');
+            TabsStore.pendingShare = {
+                folderName: sharePayload.folderName,
+                query: sharePayload.query,
+                connstr: TabsStore.getConnstr(TabsStore.selectedTab),
+            };
             TabsStore.trigger('cloud-sent');
-            Config.saveSharingServer(payload.targetServer);
-            Cloud.share(payload.targetServer, payload.encrypt, payload.encryptionKey, result, payload.callback, payload.err_callback);
+            Cloud.share(payload.shareUrl, payload.sharePassword, sharePayload.folderName,
+                        sharePayload.csv, sharePayload.query, sharePayload.queryFile,
+                        payload.callback, payload.err_callback);
             break;
 
         case 'upgrade-check':

@@ -33,6 +33,7 @@ require('brace/mode/javascript');
 require('brace/theme/chrome');
 require('brace/theme/idle_fingers');
 require('brace/keybinding/vim');
+require('./VimMode'); // fix vim prompt key handling + persist : / search history
 
 var Editor = React.createClass({
 
@@ -89,6 +90,7 @@ var Editor = React.createClass({
         TabsStore.bind('editor-find-next', this.findNext);
         TabsStore.bind('object-info-'+this.props.eventKey, this.objectInfoHandler);
         TabsStore.bind('paste-history-item-'+this.props.eventKey, this.pasteHistoryHandler);
+        TabsStore.bind('insert-text-'+this.props.eventKey, this.insertTextHandler);
         TabsStore.bind('focus-editor-'+this.props.eventKey, this.focusEditorHandler);
         TabsStore.bind('show-project-'+this.props.eventKey, this.hideCompleter);
         TabsStore.bind('hide-project-'+this.props.eventKey, this.hideCompleter);
@@ -197,6 +199,7 @@ var Editor = React.createClass({
         TabsStore.unbind('editor-find-next', this.findNext);
         TabsStore.unbind('object-info-'+this.props.eventKey, this.objectInfoHandler);
         TabsStore.unbind('paste-history-item-'+this.props.eventKey, this.pasteHistoryHandler);
+        TabsStore.unbind('insert-text-'+this.props.eventKey, this.insertTextHandler);
         TabsStore.unbind('focus-editor-'+this.props.eventKey, this.focusEditorHandler);
         TabsStore.unbind('show-project-'+this.props.eventKey, this.hideCompleter);
         TabsStore.unbind('hide-project-'+this.props.eventKey, this.hideCompleter);
@@ -518,6 +521,15 @@ var Editor = React.createClass({
         if (item != null){
             var position = this.editor.getCursorPosition();
             this.editor.getSession().insert(position, item.query);
+        }
+        this.editor.focus();
+    },
+
+    insertTextHandler: function(){
+        var text = TabsStore.insertBuffer;
+        if (text != null){
+            var position = this.editor.getCursorPosition();
+            this.editor.getSession().insert(position, text);
         }
         this.editor.focus();
     },

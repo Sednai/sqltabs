@@ -73,7 +73,7 @@ var TabContent = React.createClass({
 
                         <Project eventKey={this.props.eventKey}/>
 
-                        <TabSplit key={"tab-content-inner-"+this.props.eventKey} eventKey={this.props.eventKey}>
+                        <TabSplit key={"tab-content-inner-"+this.props.eventKey} eventKey={this.props.eventKey} type="vertical">
 
                             <Editor name={'editor-'+this.props.eventKey} theme={this.state.theme} eventKey={this.props.eventKey}/>
 

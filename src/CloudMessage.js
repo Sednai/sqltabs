@@ -22,19 +22,16 @@ var Modal = require('react-bootstrap').Modal;
 var Button = require('react-bootstrap').Button;
 var TabsStore = require('./TabsStore');
 var Actions = require('./Actions');
+var Config = require('./Config');
 var Shell = require('electron').shell;
-var Crypto = require("crypto");
 
 var CloudMessage = React.createClass({
 
     getInitialState: function(){
-        this.target_server = TabsStore.sharingServer;
-
-        const rnd = Crypto.randomBytes(16).toString('hex');
         return {
             hidden: true,
-            encrypt: false,
-            encryptionKey: rnd,
+            shareUrl: Config.getShareUrl() || '',
+            sharePassword: Config.getSharePassword() || '',
         }
     },
 
@@ -51,23 +48,24 @@ var CloudMessage = React.createClass({
     },
 
     dialogHandler: function(){
-        this.setState({
-            hidden: false,
-            status: 'dialog',
-        });
+        // First use (no link saved yet) asks for the Nextcloud/ownCloud share link;
+        // once configured, sharing uploads straight away.
+        if (Config.getShareUrl()){
+            this.doShare(Config.getShareUrl(), Config.getSharePassword());
+        } else {
+            this.setState({ hidden: false, status: 'dialog', shareUrl: '', sharePassword: '' });
+        }
     },
 
-    targetChangeHandler: function(e){
-        this.target_server = e.target.value;
+    doShare: function(url, password){
+        Actions.share(url, password); // dispatch triggers 'cloud-sent' -> sending UI
     },
 
     share: function(){
-        var encryptionKey = null;
-        if (this.state.encrypt){
-            encryptionKey = this.encryptionKeyField.value;
-            this.setState({encryptionKey});
-        }
-        Actions.share(this.target_server, this.state.encrypt, encryptionKey);
+        var url = this.shareUrlField ? this.shareUrlField.value.trim() : this.state.shareUrl;
+        var password = this.sharePasswordField ? this.sharePasswordField.value : this.state.sharePassword;
+        if (!url){ return; }
+        this.doShare(url, password);
     },
 
     sentHandler: function(){
@@ -89,12 +87,8 @@ var CloudMessage = React.createClass({
     },
 
     open: function(){
-        var docid = TabsStore.getCloudDoc();
-        var target_server = this.target_server;
-        if (this.target_server.indexOf("http://") == -1 && this.target_server.indexOf('https://') == -1){
-            target_server = "https://"+this.target_server;
-        }
-        Shell.openExternal(target_server+'/api/1.0/docs/'+docid);
+        var link = TabsStore.getCloudDoc();
+        if (link){ Shell.openExternal(link); }
         this.hide();
     },
 
@@ -132,18 +126,6 @@ var CloudMessage = React.createClass({
 
     renderDialog: function(){
 
-        var encryptionKeyField = null;
-        if (this.state.encrypt){
-            encryptionKeyField = <div>
-                Encryption key
-                <input
-                    ref={ item => { this.encryptionKeyField = ReactDOM.findDOMNode(item); } }
-                    className="target-server-input"
-                    type="text"
-                    defaultValue={ this.state.encryptionKey }/>
-                </div>
-        }
-
         return(
             <div className='static-modal'>
 
@@ -162,25 +144,25 @@ var CloudMessage = React.createClass({
                     <td><img className="about-logo" src="logo.png"/></td>
                     <td>
                         <div>
-                            Share on
-                            <input ref="target_server"
-                                onChange={this.targetChangeHandler}
+                            <p>Paste a Nextcloud/ownCloud public folder link (shared with
+                               upload permission). Results are uploaded there as a
+                               timestamped subfolder.</p>
+                            Share link
+                            <input
+                                ref={ item => { this.shareUrlField = ReactDOM.findDOMNode(item); } }
                                 className="target-server-input"
                                 type="text"
-                                placeholder="share.sqltabs.com"
-                                defaultValue={this.target_server}>
+                                placeholder="https://cloud.example.com/s/TOKEN"
+                                defaultValue={this.state.shareUrl}>
                             </input>
 
-                            <label>
+                            Link password (optional)
                             <input
-                                className="target-server-encryption-switch"
-                                defaultChecked={this.state.encrypt}
-                                onChange={ ()=>{ this.setState({encrypt: !this.state.encrypt}) }}
-                                type="checkbox"/>
-                            Encrypt
-                            </label>
-
-                            { encryptionKeyField }
+                                ref={ item => { this.sharePasswordField = ReactDOM.findDOMNode(item); } }
+                                className="target-server-input"
+                                type="password"
+                                defaultValue={this.state.sharePassword}>
+                            </input>
                         </div>
                     </td>
                     </tr></table>
@@ -252,8 +234,8 @@ var CloudMessage = React.createClass({
               <Modal.Body>
                 <table className="about-table"><tr>
                 <td><img className="about-logo" src="logo.png"/></td>
-                <td> <p> Your document is available on the URL: </p>
-                     <p> <a href="#" onClick={this.open}>{this.target_server}/api/1.0/docs/{docid}</a></p>
+                <td> <p> Uploaded. The link was copied to your clipboard: </p>
+                     <p> <a href="#" onClick={this.open}>{docid}</a></p>
                 </td>
                 </tr></table>
 
@@ -261,6 +243,7 @@ var CloudMessage = React.createClass({
 
               <Modal.Footer>
                  <Button onClick={this.open}>Open</Button>
+                 <Button onClick={this.hide}>Close</Button>
               </Modal.Footer>
 
             </Modal.Dialog>

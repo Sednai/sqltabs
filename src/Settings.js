@@ -18,6 +18,7 @@
 var React = require('react');
 var Actions = require('./Actions');
 var TabsStore = require('./TabsStore');
+var Config = require('./Config');
 
 var Settings = React.createClass({
 
@@ -31,6 +32,8 @@ var Settings = React.createClass({
             schemaFilter: TabsStore.schemaFilter,
             schemaFilterMode: TabsStore.schemaFilterMode,
             schemaFilterRegEx: TabsStore.schemaFilterRegEx,
+            shareUrl: Config.getShareUrl() || '',
+            sharePassword: Config.getSharePassword() || '',
         };
     },
 
@@ -82,6 +85,16 @@ var Settings = React.createClass({
 
     setAutoCompletion: function(ev) {
         TabsStore.setAutocompletion(ev.target.checked);
+    },
+
+    setShareUrl: function(ev) {
+        this.setState({shareUrl: ev.target.value});
+        Config.saveShareUrl(ev.target.value);
+    },
+
+    setSharePassword: function(ev) {
+        this.setState({sharePassword: ev.target.value});
+        Config.saveSharePassword(ev.target.value);
     },
 
     enableSchemaFilter: function(ev) {
@@ -153,6 +166,15 @@ var Settings = React.createClass({
                         <input type="checkbox" value="true" checked={this.state.autoCompletion} onChange={this.setAutoCompletion} />
                         Auto-completion
                     </label>
+                </div>
+                <div className="form-group">
+                    <label htmlFor="share-url-input">Share link (Nextcloud/ownCloud public folder)</label>
+                    <input id="share-url-input" type="text" className="form-control"
+                        placeholder="https://cloud.example.com/s/TOKEN"
+                        value={this.state.shareUrl} onChange={this.setShareUrl}/>
+                    <label htmlFor="share-password-input">Share link password (optional)</label>
+                    <input id="share-password-input" type="password" className="form-control"
+                        value={this.state.sharePassword} onChange={this.setSharePassword}/>
                 </div>
             </div>
         )

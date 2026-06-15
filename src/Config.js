@@ -65,6 +65,35 @@ var Conf = {
         return config.edit_mode;
     },
 
+    // Nextcloud/ownCloud public share link to upload results to (blank until the user
+    // sets it on first share), plus an optional password for password-protected links.
+    getShareUrl: function(){
+        return (typeof(config.share_url) != 'undefined') ? config.share_url : '';
+    },
+
+    saveShareUrl: function(url){
+        config.share_url = url;
+        this.saveSync();
+    },
+
+    getSharePassword: function(){
+        return (typeof(config.share_password) != 'undefined') ? config.share_password : '';
+    },
+
+    saveSharePassword: function(pw){
+        config.share_password = pw;
+        this.saveSync();
+    },
+
+    saveVimHistory: function(history){
+        config.vim_history = history;
+        this.saveSync();
+    },
+
+    getVimHistory: function(){
+        return (typeof(config.vim_history) != 'undefined') ? config.vim_history : null;
+    },
+
     saveConnHistory: function(history){
         config.conn_history = history;
         this.saveSync();

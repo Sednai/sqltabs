@@ -236,4 +236,28 @@ table {
     stroke: #f89406;
 }
 
+/* shared queries list */
+.shared-query-list{
+    max-height: 60vh;
+    overflow-y: auto;
+}
+.shared-query-item{
+    border-bottom: 1px solid #4a4a4a;
+    padding: 6px 0;
+}
+.shared-query-meta{
+    color: #9aa0a6;
+    font-size: 0.85em;
+}
+.shared-query-host{ color: #5BC0DE; }
+.shared-query-folder{ color: #9af89b; }
+.shared-query-snippet{
+    background: rgba(40, 40, 40, 0.8);
+    color: #e0e0e0;
+    border: none;
+    margin: 4px 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* */
