@@ -41,68 +41,7 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 - **Autosave & session restore** - open tabs and unsaved editor content are
   persisted to `~/.sqltabs/session.json` and restored on the next start
 
-## Running from source
 
-Requires **Node.js 18+** (tested on 22) and npm. No native toolchain is needed.
-
-```bash
-git clone git@github.com:Sednai/sqltabs.git
-cd sqltabs
-npm install        # also compiles the JSX into build/
-npm start          # launches the app (dev mode)
-```
-
-`npm run compile` rebuilds `build/` after editing files in `src/`
-(`npm run compile:watch` to watch).
-
-## Building installers
-
-No native modules are used, so packaging is just Electron + JS - there are no
-per-platform native rebuilds. Installers are produced with
-[electron-builder](https://www.electron.build) into `dist/`.
-
-**Locally on Fedora** (AppImage + rpm need no extra tooling):
-
-```bash
-npm run dist:linux        # AppImage + deb + rpm
-# or only the two that need no extra tools:
-npx electron-builder --linux AppImage rpm --publish never
-```
-
-```bash
-sudo dnf install libxcrypt-compat dpkg fakeroot
-```
-
-The **macOS `.dmg`** can only be built on a Mac. If building rpm/deb locally is
-inconvenient, build everything in CI instead (below).
-
-**All platforms via CI** - the included GitHub Actions workflow
-([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds Linux
-(AppImage + deb + rpm on `ubuntu-latest`), macOS (dmg on `macos-latest`) and
-Windows (nsis `.exe` on `windows-latest`). Trigger it from the **Actions** tab
-("build-installers" → *Run workflow*) to get the installers as downloadable
-**artifacts**, or push a version tag to also publish a release:
-
-```bash
-git tag v1.3.0
-git push origin v1.3.0
-```
-
-A tagged run gathers every installer and creates a **draft GitHub Release** with
-them attached - review it under *Releases* and click *Publish*. This is the
-easiest way to build the macOS and Windows installers without owning those
-machines.
-
-| Platform | Installers |
-|----------|------------|
-| Ubuntu / Debian | `.deb`, `.AppImage` |
-| Fedora / RHEL | `.rpm`, `.AppImage` |
-| macOS | `.dmg` (Intel x64 + Apple Silicon arm64) |
-| Windows | `.exe` (NSIS) |
-
-The macOS dmg is **unsigned** by default (first launch: right-click → *Open*).
-For notarized distribution, add an Apple Developer ID certificate and signing
-configuration.
 
 ## Connecting
 
@@ -339,6 +278,69 @@ More runnable examples live in [`examples/`](examples/).
 | History | `Ctrl+H` / `Cmd+Y` |
 | Shared queries | `Ctrl/Cmd+Shift+Y` |
 | New / close tab | `Ctrl/Cmd+T` / `Ctrl/Cmd+W` |
+
+## Running from source
+
+Requires **Node.js 18+** (tested on 22) and npm. No native toolchain is needed.
+
+```bash
+git clone git@github.com:Sednai/sqltabs.git
+cd sqltabs
+npm install        # also compiles the JSX into build/
+npm start          # launches the app (dev mode)
+```
+
+`npm run compile` rebuilds `build/` after editing files in `src/`
+(`npm run compile:watch` to watch).
+
+## Building installers
+
+No native modules are used, so packaging is just Electron + JS - there are no
+per-platform native rebuilds. Installers are produced with
+[electron-builder](https://www.electron.build) into `dist/`.
+
+**Locally on Fedora** (AppImage + rpm need no extra tooling):
+
+```bash
+npm run dist:linux        # AppImage + deb + rpm
+# or only the two that need no extra tools:
+npx electron-builder --linux AppImage rpm --publish never
+```
+
+```bash
+sudo dnf install libxcrypt-compat dpkg fakeroot
+```
+
+The **macOS `.dmg`** can only be built on a Mac. If building rpm/deb locally is
+inconvenient, build everything in CI instead (below).
+
+**All platforms via CI** - the included GitHub Actions workflow
+([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds Linux
+(AppImage + deb + rpm on `ubuntu-latest`), macOS (dmg on `macos-latest`) and
+Windows (nsis `.exe` on `windows-latest`). Trigger it from the **Actions** tab
+("build-installers" → *Run workflow*) to get the installers as downloadable
+**artifacts**, or push a version tag to also publish a release:
+
+```bash
+git tag v1.3.0
+git push origin v1.3.0
+```
+
+A tagged run gathers every installer and creates a **draft GitHub Release** with
+them attached - review it under *Releases* and click *Publish*. This is the
+easiest way to build the macOS and Windows installers without owning those
+machines.
+
+| Platform | Installers |
+|----------|------------|
+| Ubuntu / Debian | `.deb`, `.AppImage` |
+| Fedora / RHEL | `.rpm`, `.AppImage` |
+| macOS | `.dmg` (Intel x64 + Apple Silicon arm64) |
+| Windows | `.exe` (NSIS) |
+
+The macOS dmg is **unsigned** by default (first launch: right-click → *Open*).
+For notarized distribution, add an Apple Developer ID certificate and signing
+configuration.
 
 ## License
 
