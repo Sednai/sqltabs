@@ -49,9 +49,12 @@ var CloudMessage = React.createClass({
 
     dialogHandler: function(){
         // First use (no link saved yet) asks for the Nextcloud/ownCloud share link;
-        // once configured, sharing uploads straight away.
+        // once configured, sharing uploads straight away. This handler runs inside the
+        // 'share-dialog' dispatch, so the configured path must defer its own
+        // Actions.share dispatch to avoid Flux's "dispatch in the middle of a dispatch".
         if (Config.getShareUrl()){
-            this.doShare(Config.getShareUrl(), Config.getSharePassword());
+            var self = this;
+            setTimeout(function(){ self.doShare(Config.getShareUrl(), Config.getSharePassword()); }, 0);
         } else {
             this.setState({ hidden: false, status: 'dialog', shareUrl: '', sharePassword: '' });
         }

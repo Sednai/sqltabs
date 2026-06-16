@@ -40,6 +40,21 @@ var vimMod = Ace.acequire('ace/keyboard/vim');
 if (vimMod && vimMod.CodeMirror && vimMod.Vim){
     patchKeyName(vimMod.CodeMirror);
     setupHistoryPersistence(vimMod.Vim);
+    freeAppShortcutKeys(vimMod.handler);
+}
+
+// The app uses Ctrl+E (Execute Block) and Ctrl+R (Run) as editor shortcuts, but vim's
+// default keymap binds <C-e> (scroll down) and <C-r> (redo) and would swallow them in
+// vim mode. Drop those two vim bindings so the menu accelerators fire. (vim redo is still
+// available via `:redo` or Edit -> Redo / Ctrl+Shift+Z.) The handler's defaultKeymap is
+// the very array the key matcher uses, so we mutate it in place.
+function freeAppShortcutKeys(handler){
+    if (!handler || !Array.isArray(handler.defaultKeymap)){ return; }
+    var taken = { '<C-e>': 1, '<C-r>': 1 };
+    var km = handler.defaultKeymap;
+    for (var i = km.length - 1; i >= 0; i--){
+        if (km[i] && taken[km[i].keys]){ km.splice(i, 1); }
+    }
 }
 
 // Map the few modern KeyboardEvent.key values the vim prompt handlers care about back to

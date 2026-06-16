@@ -660,12 +660,30 @@ function runAsyncJob(connstr, query, cookie, ok, fail){
         function(e){ fail(e); });
 }
 
-// The Upload service reports outcome as "TAP_SERVICE_STATUS=..." (success) or an HTML
-// error page; extract a short message either way.
-function uploadStatus(body){
+// The Upload service reports outcome as "TAP_SERVICE_STATUS=..." (success) or, on error,
+// a VOTABLE/HTML/plain body (often a bare Tomcat 500). Extract a short human message,
+// stripping markup, and fall back to the raw text + HTTP status so failures are never
+// reported "without explanation".
+function uploadStatus(status, body){
     var m = /TAP_SERVICE_STATUS=([\s\S]*)/.exec(body || '');
-    if (m){ return m[1].replace(/\s+/g, ' ').trim().slice(0, 200); }
-    return dlError(0, body);
+    if (m){ return m[1].replace(/\s+/g, ' ').trim().slice(0, 300); }
+    var parsed = dlError(status, body);          // tries VOTABLE INFO / <h1> / <title>
+    if (parsed && !/^HTTP /.test(parsed)){ return parsed; }
+    var txt = (body || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); // strip tags
+    if (txt){ return txt.slice(0, 300) + (status ? ' (HTTP ' + status + ')' : ''); }
+    return 'HTTP ' + (status || '?');
+}
+
+// A user table name that already exists makes the Upload service answer with an opaque
+// 500; add a clear hint when the failure looks like that (TAP upload cannot overwrite).
+function uploadFailMessage(status, body, c, tableName){
+    var msg = uploadStatus(status, body);
+    if (/already\s*exist|exists|duplicate|TableExists|relation .* already/i.test(body || '') ||
+        (status === 500 && !/TAP_SERVICE_STATUS/.test(body || ''))){
+        msg += '\nThe table user_' + c.user + '.' + tableName + ' may already exist — TAP upload ' +
+               'cannot overwrite. Use a different name, or drop the existing table first.';
+    }
+    return 'Upload failed: ' + msg;
 }
 
 // Create a user_<name> table from an ADQL query, server-side: run the query async, then
@@ -694,9 +712,9 @@ function tapUpload(connstr, query, tableName, tableDesc, password, ok, fail){
                     return;
                 }
                 if (status >= 200 && status < 300 && !/User must be logged in/i.test(text)){
-                    ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(text));
+                    ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(status, text));
                 } else {
-                    fail('Upload failed: ' + uploadStatus(text));
+                    fail(uploadFailMessage(status, text, c, tableName));
                 }
             }, function(e){ fail(e); });
         }, fail);
@@ -733,9 +751,9 @@ function tapUploadFile(connstr, csvText, tableName, tableDesc, password, ok, fai
                 return;
             }
             if (status >= 200 && status < 300 && !/User must be logged in/i.test(text)){
-                ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(text));
+                ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(status, text));
             } else {
-                fail('Upload failed: ' + uploadStatus(text));
+                fail(uploadFailMessage(status, text, c, tableName));
             }
         }, function(e){ fail(e); }, { name: tableName + '.csv', content: csvText, type: 'text/csv' });
     };

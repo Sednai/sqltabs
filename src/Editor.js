@@ -556,16 +556,22 @@ var Editor = React.createClass({
             }
         }
 
-        if (e.keyCode == 40){ // down
-            return this.completeNext();
-        }
+        // Arrow/esc handling only applies while the completion popup is open; otherwise
+        // let the key reach the editor normally (calling complete* with no active
+        // completion threw "Cannot read properties of undefined", especially in vim
+        // normal mode where the arrows are used constantly).
+        if (this.completion_mode){
+            if (e.keyCode == 40){ // down
+                return this.completeNext();
+            }
 
-        if (e.keyCode == 38){ // up
-            return this.completePrev();
-        }
+            if (e.keyCode == 38){ // up
+                return this.completePrev();
+            }
 
-        if ([37,39,27].indexOf(e.keyCode) != -1){// hide autocompletion on arrows, esc
-            return this.hideCompleter();
+            if ([37,39,27].indexOf(e.keyCode) != -1){// hide autocompletion on arrows, esc
+                return this.hideCompleter();
+            }
         }
 
         if ([16,17,18,91].indexOf(e.keyCode) < 0){  // ignore shift, ctr, alt, command
@@ -667,6 +673,7 @@ var Editor = React.createClass({
     },
 
     complete: function(){
+        if (!this.hints || !this.hints.length){ return; } // no active completion
         var hint = this.hints[this.current_hint];
         if (hint == null){ return; } // no current hint (empty list / current_hint == -1): nothing to insert
         var position = this.editor.getCursorPosition();
@@ -691,6 +698,7 @@ var Editor = React.createClass({
     },
 
     completeNext: function(){
+        if (!this.hints || !this.hints.length){ return; }
         if (this.current_hint < this.hints.length-1){
             this.current_hint = this.current_hint + 1;
         } else if (this.current_hint == this.hints.length-1){
@@ -703,6 +711,7 @@ var Editor = React.createClass({
     },
 
     completePrev: function(){
+        if (!this.hints || !this.hints.length){ return; }
         if (this.current_hint > 0){
             this.current_hint = this.current_hint-1;
         } else if (this.current_hint == 0){
