@@ -156,7 +156,7 @@ Authentication mirrors the Postgres flow: put the username in the connection
 string, and the app prompts for the password (stored encrypted in
 `~/.sqltabs/config.json`, never in the repo). It POSTs to the service's `/login`
 endpoint for a session cookie, which is attached to every request. An
-authenticated session also exposes your personal `user_<name>` tables (saved /
+authenticated session also exposes your personal `user_table` tables (saved /
 uploaded results) in `TAP_SCHEMA`.
 
 ### Notes specific to ADQL
@@ -166,7 +166,7 @@ uploaded results) in `TAP_SCHEMA`.
   mean *identifiers* in ADQL, so `"false"` is read as a column name.
 - **`Ctrl/Cmd+I`** on a table name shows its columns (name, datatype, unit,
   description) from `TAP_SCHEMA`, falling back to a `SELECT TOP 0` probe for
-  tables `TAP_SCHEMA` does not describe (e.g. your own `user_<name>` tables).
+  tables `TAP_SCHEMA` does not describe (e.g. your own `user_table` tables).
 - **Long-running queries:** the synchronous endpoint is aborted at the service's
   own short limit (an expensive `COUNT`/`JOIN` returns "Job timeout/aborted.").
   Prefix the block with [`--- async`](#sql-documents-block-directives) to run it
@@ -198,7 +198,7 @@ WHERE score_lpv > 0.9
 - **`cols=a,b,c`** - keep only these columns (comma-separated, no spaces), in the
   given order. Omit to return all columns. Unknown names are ignored.
 - **`upload=<table_name>`** - instead of rendering, save the fetched product as a
-  `user_<name>.<table_name>` table (so light curves can be JOINed later), e.g.
+  `user_table.<table_name>` table (so light curves can be JOINed later), e.g.
   `--- datalink epoch_photometry "Gaia DR4_RC3" cols=source_id,g_obs_time,g_mag upload=my_lightcurves`.
 - Composes with a render marker, so `--- datalink epoch_photometry "Gaia DR4_RC3"
   cols=source_id,g_obs_time,g_mag chart scatter` plots a trimmed light curve.
@@ -233,7 +233,7 @@ here. (Some products are only present for sources that have that data.)
 ### Saving results as a TAP user table
 
 `--- upload <table_name>` saves a query's result back to the archive as a
-`user_<name>.<table_name>` table, **server-side** (the query runs as an async job
+`user_table.<table_name>` table, **server-side** (the query runs as an async job
 and its result is promoted - no data is re-uploaded from the client). You can
 then JOIN against it in later queries, exactly like the archive's web "upload"
 feature.
@@ -295,7 +295,7 @@ rather than how it is rendered: `--- async` runs via the asynchronous `/async`
 endpoint (e.g. `--- async chart line`), `--- datalink <type> [release]` retrieves
 a per-source DataLink product such as epoch photometry (e.g.
 `--- datalink epoch_photometry "Gaia DR4_RC3" chart scatter`), and
-`--- upload <table_name>` saves the result as a `user_<name>` table. See
+`--- upload <table_name>` saves the result as a `user_table` table. See
 [Gaia / IVOA TAP](#gaia--ivoa-tap-archives).
 
 You can also embed Markdown anywhere with `/** ... **/` blocks (rendered as
