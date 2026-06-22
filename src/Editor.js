@@ -605,7 +605,9 @@ var Editor = React.createClass({
         var position = this.editor.selection.getCursor();
         var line = this.editor.session.getLine(position.row);
         line = (line.slice(0, position.column)).toLowerCase();
-        var word = line.match(/\w+$/);
+        // include dots so a schema-qualified name keeps matching as you type past the
+        // dot, e.g. "gaiadr3." -> lists that schema's tables (gaiadr3.gaia_source, ...).
+        var word = line.match(/[\w.]+$/);
         if (word != null){
             word = word[0];
             this.getHints(word);

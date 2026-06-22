@@ -49,6 +49,7 @@ var crypto = require('crypto');
 var zlib = require('zlib');
 var async = require('async');
 var Words = require('./keywords.js');
+var Config = require('../../Config'); // stored secret, so TAP_SCHEMA is readable on auth-only archives
 
 var TAP_SYNC_TIMEOUT = 120000;            // abort a sync request after 2 min
 var InFlight = {};                        // id -> http request, so cancelQuery(id) can abort
@@ -1072,25 +1073,53 @@ var Database = {
         var key = sessionKey(c);
         if (SchemaWords[key]){ callback(SchemaWords[key]); return; } // schema is static per (endpoint,user)
 
+        var password = Config.getSecret(connstr); // authenticate the fetch when possible
         var words = Words.slice();
         var seen = new Set(words);
-        var addNames = function(csvText){
-            var rows = parseCSV(csvText);
-            for (var i = 1; i < rows.length; i++){ // skip header
-                var w = rows[i][0];
-                if (w && !seen.has(w)){ seen.add(w); words.push(w); }
-            }
+        var add = function(w){ if (w && !seen.has(w)){ seen.add(w); words.push(w); } };
+        // add a name and, for a qualified table name, its bare schema prefix too.
+        var addName = function(w){
+            if (!w){ return; }
+            add(w);
+            var dot = w.indexOf('.');
+            if (dot > 0){ add(w.slice(0, dot)); }
         };
-        // table names then column names from TAP_SCHEMA (authenticated if a session exists,
-        // so the user's own user_<name> tables are included); cache the merged list.
-        tapSync(connstr, 'SELECT table_name FROM tap_schema.tables ORDER BY table_name', undefined, null, function(t1){
-            addNames(t1);
-            tapSync(connstr, 'SELECT DISTINCT column_name FROM tap_schema.columns ORDER BY column_name', undefined, null, function(t2){
-                addNames(t2);
-                SchemaWords[key] = words;
-                callback(words);
-            }, function(){ SchemaWords[key] = words; callback(words); });
-        }, function(){ callback(Words); });
+
+        var finish = function(){
+            if (words.length > Words.length){ SchemaWords[key] = words; } // cache only if something loaded
+            callback(words);
+        };
+
+        // Column names from TAP_SCHEMA (best-effort), then finish.
+        var addColumns = function(){
+            tapSync(connstr, 'SELECT DISTINCT column_name FROM tap_schema.columns ORDER BY column_name', password, null,
+                function(csv){ var rows = parseCSV(csv); for (var i = 1; i < rows.length; i++){ add(rows[i][0]); } finish(); },
+                finish);
+        };
+
+        // ADQL fallback for table/schema names if the VOSI endpoint is unavailable.
+        var fromTapSchema = function(){
+            tapSync(connstr, 'SELECT table_name FROM tap_schema.tables ORDER BY table_name', password, null,
+                function(csv){ var rows = parseCSV(csv); for (var i = 1; i < rows.length; i++){ addName(rows[i][0]); } addColumns(); },
+                addColumns);
+        };
+
+        // Prefer the VOSI /tables metadata endpoint: it lists schemas + tables INCLUDING
+        // tables shared with the user ("Shared to me", e.g. user_dr4rc3.*), which the ADQL
+        // tap_schema.tables query omits. only_tables=true keeps the document small (names,
+        // no column metadata). Needs the authenticated session cookie to see shared/user
+        // tables. Falls back to TAP_SCHEMA if the request fails.
+        ensureSession(connstr, password, function(cookie){
+            httpGet(c.base + '/tables?only_tables=true', cookie, function(status, headers, text){
+                var names = [];
+                if (status >= 200 && status < 300){
+                    var re = /<(?:\w+:)?name>([^<]+)<\/(?:\w+:)?name>/g, m;
+                    while ((m = re.exec(text)) !== null){ names.push(m[1].trim()); }
+                }
+                if (names.length){ names.forEach(addName); addColumns(); }
+                else { fromTapSchema(); }
+            }, function(){ fromTapSchema(); });
+        }, function(){ callback(words); }); // no session -> ADQL keywords only
     }
 };
 
