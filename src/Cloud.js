@@ -60,7 +60,7 @@ const Cloud = {
                     // 2) upload results then query, then hand back the browsable folder URL.
                     put('results.csv', csv, 'text/csv', function(){
                         put(queryFile || 'query.sql', query, 'application/sql', function(){
-                            callback(base + '/index.php/s/' + token + '?path=/' + encodeURIComponent(folderName));
+                            callback(base + '/s/' + token + '?dir=/' + encodeURIComponent(folderName));
                         });
                     });
                 } else if (res.statusCode === 401 || res.statusCode === 403){

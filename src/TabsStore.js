@@ -64,12 +64,17 @@ function sanitizeName(s){
     return String(s == null ? '' : s).replace(/[^A-Za-z0-9._-]/g, '-');
 }
 
-// Local timestamp as YYYY-MM-DD_HHMMSS for a per-share, never-overwriting folder.
+// Local timestamp as YYYY-MM-DD_HHMMSS-mmm for a per-share folder. Milliseconds are
+// included so two shares in the same second don't produce the same folder name (which,
+// since MKCOL tolerates an existing folder and PUT overwrites, would silently clobber the
+// earlier upload).
 function shareTimestamp(){
     var d = new Date();
     var p = function(n){ return (n < 10 ? '0' : '') + n; };
+    var p3 = function(n){ return (n < 10 ? '00' : n < 100 ? '0' : '') + n; };
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
-           '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+           '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) +
+           '-' + p3(d.getMilliseconds());
 }
 
 // Serialize all result blocks/datasets to a single CSV string (same quoting rules as the

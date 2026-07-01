@@ -4,8 +4,9 @@ name: build-installers
 # (nsis .exe). Triggered manually (artifacts only) or by pushing a version tag
 # like v1.2.0 -- which additionally creates a draft GitHub Release with every
 # installer attached. No native modules are used, so there is nothing to rebuild
-# per platform. macOS/Windows builds are unsigned; set up signing/notarization
-# separately if you need signed distribution.
+# per platform. The macOS .app is ad-hoc signed (no Apple Developer cert) so it
+# is not flagged "damaged" on Apple Silicon; Windows is unsigned. Set up real
+# signing/notarization separately if you need fully signed distribution.
 
 on:
   workflow_dispatch:
