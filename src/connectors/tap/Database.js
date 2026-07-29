@@ -352,20 +352,29 @@ function tapLogin(connstr, password, ok, fail, _attempt){
     var attempt = _attempt || 0;
     httpPost(loginUrl(c), { username: c.user, password: decodeSecret(password) }, null, null,
         function(status, headers, text){
-            if (status >= 200 && status < 300){
-                var cookie = extractSessionCookie(headers);
-                if (cookie){
-                    Sessions[sessionKey(c)] = cookie;
-                    invalidateWords(sessionKey(c)); // refetch completion now that user tables are visible
-                    ok(cookie);
-                } else if (attempt < 3){
-                    tapLogin(connstr, password, ok, fail, attempt + 1); // no cookie issued: retry
-                } else {
-                    fail({ status: status, msg: 'login succeeded but no session cookie was returned' });
-                }
-            } else {
-                fail({ status: status, msg: status === 401 ? 'Bad credentials' : errorFromBody(status, text) });
+            var cookie = extractSessionCookie(headers);
+            // Trust the cookie over the status code: this endpoint is observed to answer 500
+            // while still issuing a perfectly usable JSESSIONID (and, other times, 200 with no
+            // cookie at all). Rejecting those 500s dropped us to an anonymous session, which
+            // silently hides the user's own and "Shared to me" tables. An explicit auth
+            // rejection is the exception -- never keep a session from that.
+            if (cookie && status !== 401 && status !== 403){
+                Sessions[sessionKey(c)] = cookie;
+                invalidateWords(sessionKey(c)); // refetch completion now that user tables are visible
+                ok(cookie);
+                return;
             }
+            if (status === 401 || status === 403){
+                fail({ status: status, msg: 'Bad credentials' });
+                return;
+            }
+            if (attempt < 3){
+                tapLogin(connstr, password, ok, fail, attempt + 1); // no cookie issued: retry
+                return;
+            }
+            fail({ status: status, msg: (status >= 200 && status < 300)
+                ? 'login succeeded but no session cookie was returned'
+                : errorFromBody(status, text) });
         },
         function(e){ fail({ status: 0, msg: e }); });
 }
@@ -672,6 +681,17 @@ function runAsyncJob(connstr, query, cookie, ok, fail){
 // a VOTABLE/HTML/plain body (often a bare Tomcat 500). Extract a short human message,
 // stripping markup, and fall back to the raw text + HTTP status so failures are never
 // reported "without explanation".
+// The fullest word list known for a session. A fetch in progress publishes table names
+// before the (much slower) column names, so mid-refresh the in-memory list can be a subset
+// of what the previous session saved -- prefer the larger one so completions never lose the
+// columns they were already offering.
+function bestKnownWords(key){
+    var mem = SchemaWords[key];
+    var disk = SchemaCache.get(key);
+    if (mem && disk){ return mem.length >= disk.length ? mem : disk; }
+    return mem || disk || null;
+}
+
 // Drop the cached completion words for a session. Bumping the generation tells a fetch that
 // is still in flight that its result is now stale and must not be cached.
 function invalidateWords(key){
@@ -1106,7 +1126,7 @@ var Database = {
         var c = parseConn(connstr);
         var key = sessionKey(c);
         if (SchemaWords[key]){                        // schema is static per (endpoint,user)
-            var cached = SchemaWords[key];
+            var cached = bestKnownWords(key);
             if (StaleWords[key]){
                 // An upload added a table name to this list. Answer with it now -- the
                 // caller gets the new table with no round-trip -- then drop the cache so the
@@ -1123,7 +1143,22 @@ var Database = {
         // archive. Answer with the base keywords only while nothing better has ever been
         // loaded -- once it has, return null instead, which the caller treats as "no update"
         // rather than replacing a full schema list with 87 keywords.
-        if (Fetching[key]){ callback(HadWords[key] ? null : Words.slice()); return; }
+        if (Fetching[key]){
+            // Hand over whatever is already known for this endpoint. Two connection strings
+            // can resolve to the same (endpoint, user) -- e.g. gaiapre://me and
+            // taps://me@geapre.../tap -- and the second must not sit empty for the whole
+            // fetch just because the first one started it. Falling back to null rather than
+            // the bare keywords keeps a populated list from being replaced by 87 words.
+            var known = bestKnownWords(key);
+            callback(known ? known.slice() : (HadWords[key] ? null : Words.slice()));
+            return;
+        }
+
+        // Claim the fetch slot BEFORE answering from disk below: that callback runs
+        // synchronously and the caller may re-enter this function for another connection
+        // string on the same endpoint, which would otherwise slip past the guard above and
+        // start a second concurrent schema fetch.
+        Fetching[key] = true;
 
         // Nothing in memory yet. Answer once from the list a previous session saved, so table
         // names are completable immediately instead of after the ~25s schema load, then carry
@@ -1138,8 +1173,6 @@ var Database = {
                 callback = function(){};
             }
         }
-
-        Fetching[key] = true;
         // The generation is taken AFTER the session is established: logging in invalidates
         // the cache (it may have been built anonymously), and that bump must not discard the
         // results of this very fetch.
@@ -1172,7 +1205,10 @@ var Database = {
             if (words.length > Words.length){
                 SchemaWords[key] = words.slice();
                 HadWords[key] = true;
-                SchemaCache.put(key, SchemaWords[key]); // next session completes without waiting
+                // Persist only the finished list. Saving the intermediate table-names-only
+                // stage would overwrite a previous session's fuller list (names AND columns)
+                // with a subset, and the next startup would come up short.
+                if (done){ SchemaCache.put(key, SchemaWords[key]); }
             }
         };
 
