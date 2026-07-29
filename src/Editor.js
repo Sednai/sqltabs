@@ -35,6 +35,36 @@ require('brace/theme/idle_fingers');
 require('brace/keybinding/vim');
 require('./VimMode'); // fix vim prompt key handling + persist : / search history
 
+// Bare modifier presses. They insert nothing, so they are part of NO_COMPLETION_KEYS below,
+// but they must never count as a "chord": ctrl's OWN keydown already carries
+// e.ctrlKey === true, so treating it as a shortcut would discard the completion queued for
+// the word being typed just because the user reached for Ctrl.
+var MODIFIER_KEYS = [16, 17, 18, 91, 92, 93]; // shift, ctrl, alt, left/right command, context menu
+
+// Keys that never insert text, so they must not schedule a completion recompute.
+// Recomputing on caret movement popped the autocomplete window whenever a plain arrow-key
+// navigation happened to land the caret at the end of a word, forcing an
+// up->esc->up->esc dance just to move around the script.
+var NO_COMPLETION_KEYS = MODIFIER_KEYS.concat([
+    37, 38, 39, 40,                     // left, up, right, down
+    33, 34, 35, 36,                     // page up, page down, end, home
+    27,                                 // escape (also: leaving vim insert mode)
+    20, 19, 45, 144, 145,               // caps lock, pause, insert, num lock, scroll lock
+    112, 113, 114, 115, 116, 117,       // F1-F6
+    118, 119, 120, 121, 122, 123,       // F7-F12
+]);
+
+// The subset above that moves the caret or dismisses the popup. These must additionally
+// cancel a recompute queued by the PREVIOUS keystroke, which would otherwise fire against
+// the new caret position. Modifiers are deliberately excluded: pressing Shift to type a
+// capital must not throw away the completion for the word being typed.
+var CANCEL_COMPLETION_KEYS = [37, 38, 39, 40, 33, 34, 35, 36, 27];
+
+// Caret movement that should dismiss an open completion popup rather than walk it
+// (up/down walk the list; these jump the caret somewhere else entirely). Enter is here so
+// the list cannot be left stranded over a new line.
+var COMPLETION_DISMISS_KEYS = [37, 39, 27, 33, 34, 35, 36, 13];
+
 var Editor = React.createClass({
 
     getInitialState: function(){
@@ -178,6 +208,17 @@ var Editor = React.createClass({
         this.editor.session.on('change', this.contentChangeHandler);
         this.editor.selection.on('changeCursor', this.contentChangeHandler);
 
+        // A click or a focus change moves the caret without any keydown, so the popup would
+        // stay open with completion_mode still true -- and while it is open ace's golineup/
+        // golinedown commands are removed, so Up/Down then do nothing at all and the next
+        // Tab rewrites whatever word the caret has landed on. Dismiss it on both.
+        // Listen on the container in the capture phase rather than via editor.on('mousedown'),
+        // whose ace listeners cover only the scroller and scrollbars -- a click on the gutter
+        // (line numbers) moves the caret but would leave the popup up. The completion list is
+        // a sibling of the container, not a child, so its own clicks are unaffected.
+        this.editor.container.addEventListener('mousedown', this.hideCompleter, true);
+        this.editor.on('blur', this.hideCompleter);
+
         this.editor.commands.removeCommand('showSettingsMenu'); // disable Cmd+,
 
         this.editor.focus();
@@ -210,12 +251,16 @@ var Editor = React.createClass({
 
         if (this._contentTimer){ clearTimeout(this._contentTimer); this._contentTimer = null; }
         if (this._completionTimer){ clearTimeout(this._completionTimer); this._completionTimer = null; }
+        if (this._noteTimer){ clearTimeout(this._noteTimer); this._noteTimer = null; }
         if (this.editor){
             this.editor.session.off('change', this.contentChangeHandler);
             this.editor.selection.off('changeCursor', this.contentChangeHandler);
+            this.editor.container.removeEventListener('mousedown', this.hideCompleter, true);
+            this.editor.off('blur', this.hideCompleter);
         }
 
-        this.editor_input.removeEventListener("keydown", this.keyHandler);
+        // must match the capture flag used in componentDidMount, or the listener stays put
+        this.editor_input.removeEventListener("keydown", this.keyHandler, true);
     },
 
     // Debounced: push the current editor content into the tab and schedule a
@@ -544,7 +589,24 @@ var Editor = React.createClass({
 
     keyHandler: function(e){
         var self = this;
-        if (e.keyCode == 9){ // tab
+
+        // Ctrl+Space explicitly opens the completion list. Handled before the chord test
+        // below, which would otherwise class it as a shortcut and suppress it.
+        if (e.keyCode == 32 && e.ctrlKey && !e.altKey){
+            e.preventDefault();
+            e.stopPropagation(); // keep ace from inserting a space and vim from seeing it
+            return this.forceCompletion();
+        }
+
+        // Ctrl/Cmd chords are app shortcuts (Ctrl+F find, Ctrl+L connection, Ctrl+E execute
+        // block, Ctrl+Z undo, vim's <C-[> / <C-c>), not text input. AltGr arrives as
+        // ctrl+alt on Windows/Linux layouts and DOES produce text, so it is excluded here.
+        var chord = MODIFIER_KEYS.indexOf(e.keyCode) < 0 &&
+                    ((e.ctrlKey && !e.altKey) || e.metaKey);
+
+        // Plain Tab accepts a hint and Shift+Tab walks back, but Ctrl/Cmd+Tab switches app
+        // tabs and Alt+Tab is the window switcher -- those must not be swallowed.
+        if (e.keyCode == 9 && !chord && !e.altKey){
             if (this.completion_mode){
                 e.preventDefault();
                 e.stopPropagation();
@@ -561,20 +623,29 @@ var Editor = React.createClass({
         // completion threw "Cannot read properties of undefined", especially in vim
         // normal mode where the arrows are used constantly).
         if (this.completion_mode){
-            if (e.keyCode == 40){ // down
+            // Only a PLAIN Up/Down walks the list. Held with a modifier they mean something
+            // else entirely -- Shift+Up extends the selection, Alt/Cmd+Up jump -- and walking
+            // the list would silently rewrite the word under the caret instead.
+            var plainArrow = !chord && !e.shiftKey && !e.altKey;
+            if (plainArrow && e.keyCode == 40){ // down
                 return this.completeNext();
             }
-
-            if (e.keyCode == 38){ // up
+            if (plainArrow && e.keyCode == 38){ // up
                 return this.completePrev();
             }
 
-            if ([37,39,27].indexOf(e.keyCode) != -1){// hide autocompletion on arrows, esc
+            // Everything else closes the list rather than stranding it: caret jumps, Enter,
+            // a MODIFIED arrow (which fell past the walk above), and any shortcut --
+            // Ctrl+Z/Ctrl+V rewrite the text under the caret and vim's <C-[>/<C-c> leave
+            // insert mode. While the list is open ace's golineup/golinedown commands are
+            // removed, so leaving it up turns Up/Down into dead keys.
+            if (chord || e.keyCode == 38 || e.keyCode == 40 ||
+                COMPLETION_DISMISS_KEYS.indexOf(e.keyCode) != -1){
                 return this.hideCompleter();
             }
         }
 
-        if ([16,17,18,91].indexOf(e.keyCode) < 0){  // ignore shift, ctr, alt, command
+        if (!chord && NO_COMPLETION_KEYS.indexOf(e.keyCode) < 0){
             var vim_mode = this.getVimMode();
             if (vim_mode == null || vim_mode == 'insert'){ // don't show autocompletion in normal mode of vim
                 // debounce: recompute completion only after typing briefly pauses,
@@ -585,6 +656,12 @@ var Editor = React.createClass({
                     self.adjustCompletion();
                 }, 120);
             }
+        } else if (chord || CANCEL_COMPLETION_KEYS.indexOf(e.keyCode) != -1){
+            // Moving the caret (or invoking a shortcut) cancels a recompute queued by the
+            // previous keystroke -- otherwise typing and immediately navigating away pops
+            // the list at the new position, since the debounced callback only ever looks at
+            // where the caret is when it finally fires.
+            this.cancelCompletionTimer();
         }
     },
 
@@ -592,8 +669,42 @@ var Editor = React.createClass({
         this.completion_words = TabsStore.getCompletionWords(TabsStore.getConnstr(this.props.eventKey));
     },
 
-    adjustCompletion: function(){
-        if (!TabsStore.auto_completion){
+    // Ctrl+Space: ask for the list at the caret, right now. Since completion no longer
+    // recomputes on caret movement, arrowing to the end of an existing name deliberately
+    // shows nothing -- this is how you get it back, and it also works with no word under
+    // the caret (an empty prefix simply lists the first hints).
+    forceCompletion: function(){
+        this.cancelCompletionTimer();
+        // A large TAP archive takes ~25s to report its schema on a first-ever connection, and
+        // until it lands there is nothing to match. Say so instead of appearing to ignore the
+        // key. (Later sessions read the previous list from disk, so this is rarely seen.)
+        if (!this.completion_words || !this.completion_words.length){
+            this.showCompletionNote('loading schema …');
+            return;
+        }
+        this.adjustCompletion(true);
+    },
+
+    // Show a transient note where the hint list normally goes. completion_mode stays false so
+    // this does not hijack Tab/Up/Down the way a real hint list does.
+    showCompletionNote: function(text){
+        var self = this;
+        var completer = $(ReactDOM.findDOMNode(this.refs.completer));
+        var cursor = $("#"+this.props.name).find(".ace_cursor");
+        this.hints = [];
+        this.completion_mode = false;
+        completer.html('<ul><li class="completion-hint-message">' + text + '</li></ul>');
+        completer.offset({ top: cursor.offset().top + cursor.height(), left: cursor.offset().left });
+        completer.show();
+        if (this._noteTimer){ clearTimeout(this._noteTimer); }
+        this._noteTimer = setTimeout(function(){
+            self._noteTimer = null;
+            completer.hide();
+        }, 2500);
+    },
+
+    adjustCompletion: function(force){
+        if (!TabsStore.auto_completion && !force){ // an explicit request overrides the setting
             return;
         }
         var completer = $(ReactDOM.findDOMNode(this.refs.completer));
@@ -608,8 +719,8 @@ var Editor = React.createClass({
         // include dots so a schema-qualified name keeps matching as you type past the
         // dot, e.g. "gaiadr3." -> lists that schema's tables (gaiadr3.gaia_source, ...).
         var word = line.match(/[\w.]+$/);
-        if (word != null){
-            word = word[0];
+        if (word != null || force){
+            word = word != null ? word[0] : '';
             this.getHints(word);
             if (this.hints.length > 0){
                 completer.show();
@@ -628,7 +739,19 @@ var Editor = React.createClass({
         }
     },
 
+    // Drop a queued completion recompute. Dismissing/walking the list must always call this:
+    // the debounced callback ignores completion_mode, so a recompute queued by the keystroke
+    // before the dismiss would re-open the popup ~120ms later with no further input.
+    cancelCompletionTimer: function(){
+        if (this._completionTimer){
+            clearTimeout(this._completionTimer);
+            this._completionTimer = null;
+        }
+    },
+
     hideCompleter: function(){
+        this.cancelCompletionTimer();
+        if (this._noteTimer){ clearTimeout(this._noteTimer); this._noteTimer = null; }
         this.completion_mode = false;
         this.hints = [];
         var completer = $(ReactDOM.findDOMNode(this.refs.completer));
@@ -701,6 +824,9 @@ var Editor = React.createClass({
 
     completeNext: function(){
         if (!this.hints || !this.hints.length){ return; }
+        // a recompute queued by the keystroke before this one would rebuild the list and
+        // reset current_hint to -1, losing our place mid-walk.
+        this.cancelCompletionTimer();
         if (this.current_hint < this.hints.length-1){
             this.current_hint = this.current_hint + 1;
         } else if (this.current_hint == this.hints.length-1){
@@ -714,9 +840,14 @@ var Editor = React.createClass({
 
     completePrev: function(){
         if (!this.hints || !this.hints.length){ return; }
+        this.cancelCompletionTimer();
         if (this.current_hint > 0){
             this.current_hint = this.current_hint-1;
-        } else if (this.current_hint == 0){
+        } else {
+            // 0 wraps to the end; so does -1, the state getHints() leaves a freshly built
+            // list in. Without that, Up on a just-opened popup moved nothing at all -- and
+            // ace's golineup command is removed while the popup is open, so the caret was
+            // stuck too.
             this.current_hint = this.hints.length-1;
         }
         this.complete();

@@ -27,7 +27,8 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 ## Features
 
 - Multi-tab SQL editor (Ace) with an optional **Vim** keybinding mode
-- Schema-aware **autocompletion**
+- Schema-aware **autocompletion**, on demand with **Ctrl+Space**; the schema of a slow
+  archive is cached between sessions so completion works immediately at startup
 - Result grids with lazy rendering, sorting, and CSV/JSON export - including
   `--- csv <file>` / `--- json <file>` block markers that **save results to disk**
 - **Charts** rendered inline with [c3.js](https://c3js.org) (see below)

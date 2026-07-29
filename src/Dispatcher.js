@@ -404,6 +404,14 @@ DBDispatcher.register(function(payload){
                 if (exp.errors.length){ new Notification('SQL Tabs — export failed', { body: exp.errors.join('; ') }); }
                 else if (exp.saved.length){ new Notification('SQL Tabs', { body: 'Saved ' + exp.saved.join(', ') }); }
             } catch (e){ /* notifications optional */ }
+            // `--- upload <table>` (and datalink `upload=<table>`) create a server-side table.
+            // The connector drops its cached word list on success; refresh right away rather
+            // than waiting out the 15s poll, so the new table can be referenced immediately.
+            var finishedTab = TabsStore.tabs[payload.key];
+            if (finishedTab && finishedTab.script &&
+                /^[ \t]*---[ \t]+upload[ \t]+|\bupload=/im.test(finishedTab.script)){
+                updateCompletionWords();
+            }
             break;
 
         case 'query-error':

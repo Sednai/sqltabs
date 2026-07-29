@@ -50,6 +50,7 @@ var zlib = require('zlib');
 var async = require('async');
 var Words = require('./keywords.js');
 var Config = require('../../Config'); // stored secret, so TAP_SCHEMA is readable on auth-only archives
+var SchemaCache = require('../../SchemaCache'); // last known word list, so a new session completes at once
 
 var TAP_SYNC_TIMEOUT = 120000;            // abort a sync request after 2 min
 var InFlight = {};                        // id -> http request, so cancelQuery(id) can abort
@@ -57,6 +58,12 @@ var AsyncJobs = {};                        // id -> {cancelled, base, jobUrl, co
 var Sessions = {};                        // "base|user" -> "JSESSIONID=..." tap-server session cookie
 var DataSessions = {};                    // "base|user" -> data-server (DataLink) session cookie
 var SchemaWords = {};                     // "base|user" -> cached completion words
+var StaleWords = {};                      // "base|user" -> cached list is one upload behind
+var Fetching = {};                        // "base|user" -> a schema fetch is in flight
+var HadWords = {};                        // "base|user" -> a fetch has succeeded at least once
+var DiskServed = {};                      // "base|user" -> the saved list was already served
+var FetchGen = {};                        // "base|user" -> bumped per fetch, so a slow
+                                          // result cannot overwrite newer data
 
 var ASYNC_POLL_MS = 1500;                 // delay between UWS phase polls
 var ASYNC_MAX_MS = 1800000;               // give up after 30 min of polling
@@ -349,7 +356,7 @@ function tapLogin(connstr, password, ok, fail, _attempt){
                 var cookie = extractSessionCookie(headers);
                 if (cookie){
                     Sessions[sessionKey(c)] = cookie;
-                    delete SchemaWords[sessionKey(c)]; // refetch completion now that user tables are visible
+                    invalidateWords(sessionKey(c)); // refetch completion now that user tables are visible
                     ok(cookie);
                 } else if (attempt < 3){
                     tapLogin(connstr, password, ok, fail, attempt + 1); // no cookie issued: retry
@@ -665,6 +672,31 @@ function runAsyncJob(connstr, query, cookie, ok, fail){
 // a VOTABLE/HTML/plain body (often a bare Tomcat 500). Extract a short human message,
 // stripping markup, and fall back to the raw text + HTTP status so failures are never
 // reported "without explanation".
+// Drop the cached completion words for a session. Bumping the generation tells a fetch that
+// is still in flight that its result is now stale and must not be cached.
+function invalidateWords(key){
+    delete SchemaWords[key];
+    FetchGen[key] = (FetchGen[key] || 0) + 1;
+}
+
+// A freshly uploaded table has to be usable in autocompletion straight away, but refetching
+// the schema costs a ~30s round-trip against the archive. We know the name already, so add
+// it to the cached word list and mark the list stale: the next completion poll answers
+// instantly with the new table, and the one after that refetches in full for its columns.
+function noteUploadedTable(c, tableName){
+    var key = sessionKey(c);
+    var full = 'user_' + c.user + '.' + tableName;
+    var words = SchemaWords[key];
+    if (words){
+        if (words.indexOf(full) < 0){ words.push(full); }
+        if (words.indexOf('user_' + c.user) < 0){ words.push('user_' + c.user); }
+        StaleWords[key] = true;
+        SchemaCache.put(key, words); // keep it across restarts, not just until the next refetch
+    } else {
+        invalidateWords(key); // nothing cached yet: the next fetch is fresh anyway
+    }
+}
+
 function uploadStatus(status, body){
     var m = /TAP_SERVICE_STATUS=([\s\S]*)/.exec(body || '');
     if (m){ return m[1].replace(/\s+/g, ' ').trim().slice(0, 300); }
@@ -713,6 +745,7 @@ function tapUpload(connstr, query, tableName, tableDesc, password, ok, fail){
                     return;
                 }
                 if (status >= 200 && status < 300 && !/User must be logged in/i.test(text)){
+                    noteUploadedTable(c, tableName); // make it autocompletable at once
                     ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(status, text));
                 } else {
                     fail(uploadFailMessage(status, text, c, tableName));
@@ -752,6 +785,7 @@ function tapUploadFile(connstr, csvText, tableName, tableDesc, password, ok, fai
                 return;
             }
             if (status >= 200 && status < 300 && !/User must be logged in/i.test(text)){
+                noteUploadedTable(c, tableName); // as above: autocompletable at once
                 ok('Created table user_' + c.user + '.' + tableName + ' — ' + uploadStatus(status, text));
             } else {
                 fail(uploadFailMessage(status, text, c, tableName));
@@ -1071,7 +1105,45 @@ var Database = {
         var connstr = this.connstr;
         var c = parseConn(connstr);
         var key = sessionKey(c);
-        if (SchemaWords[key]){ callback(SchemaWords[key]); return; } // schema is static per (endpoint,user)
+        if (SchemaWords[key]){                        // schema is static per (endpoint,user)
+            var cached = SchemaWords[key];
+            if (StaleWords[key]){
+                // An upload added a table name to this list. Answer with it now -- the
+                // caller gets the new table with no round-trip -- then drop the cache so the
+                // next poll refetches in full and picks up the new table's columns too.
+                delete StaleWords[key];
+                invalidateWords(key);
+            }
+            callback(cached);
+            return;
+        }
+
+        // A fetch for this session is already running (the completion poll ticks every 15s,
+        // the fetch can take much longer): don't start a second round-trip against the
+        // archive. Answer with the base keywords only while nothing better has ever been
+        // loaded -- once it has, return null instead, which the caller treats as "no update"
+        // rather than replacing a full schema list with 87 keywords.
+        if (Fetching[key]){ callback(HadWords[key] ? null : Words.slice()); return; }
+
+        // Nothing in memory yet. Answer once from the list a previous session saved, so table
+        // names are completable immediately instead of after the ~25s schema load, then carry
+        // on into the fetch below to refresh it. The callback is neutralised so the fetch
+        // updates the cache silently and the next poll picks up the fresh list.
+        if (!DiskServed[key]){
+            DiskServed[key] = true;
+            var stored = SchemaCache.get(key);
+            if (stored && stored.length){
+                HadWords[key] = true; // a poll during the refresh must not downgrade to keywords
+                callback(stored.slice());
+                callback = function(){};
+            }
+        }
+
+        Fetching[key] = true;
+        // The generation is taken AFTER the session is established: logging in invalidates
+        // the cache (it may have been built anonymously), and that bump must not discard the
+        // results of this very fetch.
+        var gen = null;
 
         var password = Config.getSecret(connstr); // authenticate the fetch when possible
         var words = Words.slice();
@@ -1085,22 +1157,51 @@ var Database = {
             if (dot > 0){ add(w.slice(0, dot)); }
         };
 
-        var finish = function(){
-            if (words.length > Words.length){ SchemaWords[key] = words; } // cache only if something loaded
-            callback(words);
+        // Answer the caller once, with whatever has been collected so far.
+        var answered = false;
+        var publish = function(){
+            if (answered){ return; }
+            answered = true;
+            callback(words.slice());
+        };
+        // Cache what we have. `done` marks the end of the whole fetch. The generation check
+        // drops a slow result whose cache was invalidated meanwhile (login, upload).
+        var cache = function(done){
+            if (done){ delete Fetching[key]; }
+            if (gen === null || FetchGen[key] !== gen){ return; }
+            if (words.length > Words.length){
+                SchemaWords[key] = words.slice();
+                HadWords[key] = true;
+                SchemaCache.put(key, SchemaWords[key]); // next session completes without waiting
+            }
         };
 
-        // Column names from TAP_SCHEMA (best-effort), then finish.
+        // Columns are the slow half -- a tap_schema round-trip over every column in the
+        // archive -- and they are not needed to complete a schema or table name. They are
+        // therefore loaded AFTER the table names have already been published, so a fresh
+        // connection can complete table names in seconds instead of ~30s. Best-effort.
         var addColumns = function(){
             tapSync(connstr, 'SELECT DISTINCT column_name FROM tap_schema.columns ORDER BY column_name', password, null,
-                function(csv){ var rows = parseCSV(csv); for (var i = 1; i < rows.length; i++){ add(rows[i][0]); } finish(); },
-                finish);
+                function(csv){
+                    var rows = parseCSV(csv);
+                    for (var i = 1; i < rows.length; i++){ add(rows[i][0]); }
+                    cache(true); publish();
+                },
+                function(){ cache(true); publish(); });
+        };
+
+        // Table/schema names are usable on their own: cache and hand them over at once, then
+        // keep loading columns in the background for the next poll to pick up.
+        var namesReady = function(){
+            cache(false);
+            publish();
+            addColumns();
         };
 
         // ADQL fallback for table/schema names if the VOSI endpoint is unavailable.
         var fromTapSchema = function(){
             tapSync(connstr, 'SELECT table_name FROM tap_schema.tables ORDER BY table_name', password, null,
-                function(csv){ var rows = parseCSV(csv); for (var i = 1; i < rows.length; i++){ addName(rows[i][0]); } addColumns(); },
+                function(csv){ var rows = parseCSV(csv); for (var i = 1; i < rows.length; i++){ addName(rows[i][0]); } namesReady(); },
                 addColumns);
         };
 
@@ -1110,16 +1211,17 @@ var Database = {
         // no column metadata). Needs the authenticated session cookie to see shared/user
         // tables. Falls back to TAP_SCHEMA if the request fails.
         ensureSession(connstr, password, function(cookie){
+            gen = FetchGen[key] = (FetchGen[key] || 0) + 1; // logging in has already invalidated
             httpGet(c.base + '/tables?only_tables=true', cookie, function(status, headers, text){
                 var names = [];
                 if (status >= 200 && status < 300){
                     var re = /<(?:\w+:)?name>([^<]+)<\/(?:\w+:)?name>/g, m;
                     while ((m = re.exec(text)) !== null){ names.push(m[1].trim()); }
                 }
-                if (names.length){ names.forEach(addName); addColumns(); }
+                if (names.length){ names.forEach(addName); namesReady(); }
                 else { fromTapSchema(); }
             }, function(){ fromTapSchema(); });
-        }, function(){ callback(words); }); // no session -> ADQL keywords only
+        }, function(){ delete Fetching[key]; publish(); }); // no session -> ADQL keywords only
     }
 };
 

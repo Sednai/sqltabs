@@ -93,6 +93,12 @@
     background-color: #DDDDDD;
 }
 
+/* transient note in place of hints, e.g. while the schema is still loading */
+.completion-hint-message{
+    color: #777777;
+    font-style: italic;
+}
+
 /* sqldoc csv render*/
 .csv-separator{
     color: rgb(84, 149, 213);

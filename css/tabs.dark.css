@@ -172,6 +172,12 @@ table {
     color: #ffffff;
 }
 
+/* transient note in place of hints, e.g. while the schema is still loading */
+.completion-hint-message{
+    color: #b0b0b0;
+    font-style: italic;
+}
+
 
 /* sqldoc csv render*/
 .csv-separator{
