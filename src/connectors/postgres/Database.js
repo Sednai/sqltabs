@@ -163,7 +163,11 @@ var Database = {
 
     testConnection: function(id, connstr, password, callback, ask_password_callback, err_callback){
 
+        // Ctrl+L / reconnect: drop BOTH cached clients. Object Info (Ctrl+I) runs on
+        // the InfoClients entry; clearing only the query client left a dead info
+        // client cached forever, so reconnecting never fixed a hung Ctrl+I.
         delete Clients[id];
+        delete InfoClients[id];
 
         var client = this.getClient(id, connstr, password);
 
@@ -273,11 +277,25 @@ var Database = {
         var client = this.getInfoClient(id, connstr, password);
         client.sendQuery(query,
             function(result){
-                if (result.datasets.length > 0 && result.datasets[0].resultStatus == 'PGRES_FATAL_ERROR'){
-                    err_callback(result.datasets[0].resultErrorMessage);
-                } else {
-                    callback(result.datasets[0].data);
+                // A server error can land in any dataset (and NOTICE datasets,
+                // which carry no rows, can precede the real one) -- scan all of
+                // them instead of assuming datasets[0] is the answer. Handing a
+                // notice or an error dataset to `callback` as if it were data
+                // made callers dereference .data[0][0] on undefined and die
+                // mid-callback, hanging the whole Object Info chain.
+                for (var i = 0; i < result.datasets.length; i++){
+                    if (result.datasets[i].resultStatus == 'PGRES_FATAL_ERROR'){
+                        err_callback(result.datasets[i].resultErrorMessage);
+                        return;
+                    }
                 }
+                for (var i = 0; i < result.datasets.length; i++){
+                    if (Array.isArray(result.datasets[i].data)){
+                        callback(result.datasets[i].data);
+                        return;
+                    }
+                }
+                callback([]);
             },
             function(err){
                 err_callback(err);
@@ -306,12 +324,9 @@ var Database = {
 
     _getCurrentUser: function(id, connstr, password, callback, err_callback){
 
-        var client = this.getInfoClient(id, connstr, password);
-        var query = "SELECT current_user;";
-        client.sendQuery(query,
-        function(result){
-            var user = result.datasets[0].data[0][0];
-            callback(user);
+        this._getData(id, connstr, password, "SELECT current_user;",
+        function(data){
+            callback(data.length > 0 ? data[0][0] : null);
         },
         function(err){
             err_callback(id, err);
@@ -347,11 +362,9 @@ var Database = {
 
     _getSearchPath: function(id, connstr, password, callback, err_callback){
         var self = this;
-        var client = this.getInfoClient(id, connstr, password);
-        var query = "SHOW search_path";
-        client.sendQuery(query,
-        function(result){
-            var search_path = result.datasets[0].data[0][0];
+        this._getData(id, connstr, password, "SHOW search_path",
+        function(data){
+            var search_path = data.length > 0 ? data[0][0] : '';
             self._normalizeSearchPath(id, connstr, password, search_path,
             function(search_path){
                 callback(search_path);
@@ -576,28 +589,23 @@ where p.pronamespace = n.oid \
 and n.nspname = '"+schema_name+"' \
 and p.proname = '"+proc_name+"'";
 
-                client.sendQuery(query,
-                function(result){
-                    oids = result.datasets[0].data;
+                self._getData(id, connstr, password, query,
+                function(data){
+                    oids = data;
                     // get scripts for func oids
                     if (oids.length > 0){
                         var calls_for_scripts = oids.map(function(item){return function(cb_inner){
                             var oid = item[0];
 
-                            var client = self.getInfoClient(id, connstr, password);
-                            var query = "SELECT pg_get_functiondef("+oid+")";
-                            client.sendQuery(query,
-                            function(result){
-                                if (result.datasets[0].resultStatus == 'PGRES_FATAL_ERROR'){
-                                    error = true;
-                                    err_callback(id, result.datasets[0].resultErrorMessage);
-                                } else {
-                                    var script = result.datasets[0].data[0][0];
-                                    func.scripts.push(script);
+                            self._getData(id, connstr, password, "SELECT pg_get_functiondef("+oid+")",
+                            function(sdata){
+                                if (sdata.length > 0){
+                                    func.scripts.push(sdata[0][0]);
                                 }
                                 cb_inner();
                             },
                             function(err){
+                                error = true;
                                 err_callback(id, err);
                                 cb_inner();
                             });
@@ -615,6 +623,7 @@ and p.proname = '"+proc_name+"'";
                 },
                 function(err){
                     err_callback(id, err);
+                    done(); // without this the outer series never finishes and Ctrl+I hangs
                 });
 
             }});

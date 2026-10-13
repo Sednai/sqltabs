@@ -256,6 +256,11 @@ function httpPost(urlStr, params, cookie, id, onResp, onErr){
         var chunks = [];
         res.on('data', function(d){ chunks.push(d); });
         res.on('end', function(){ finish(onResp, res.statusCode, res.headers, Buffer.concat(chunks).toString('utf8')); });
+        // the connection can die mid-body (network drop, server restart): without this
+        // neither onResp nor onErr ever fires and the caller -- e.g. Ctrl+I Object
+        // Info -- waits forever.
+        res.on('error', function(e){ finish(onErr, e.message); });
+        res.on('aborted', function(){ finish(onErr, 'connection dropped mid-response'); });
     });
     req.on('error', function(e){ finish(onErr, e.message); });
     req.setTimeout(TAP_SYNC_TIMEOUT, function(){ req.destroy(new Error('TAP request timed out after ' + (TAP_SYNC_TIMEOUT / 1000) + 's')); });
@@ -293,6 +298,8 @@ function httpPostMultipart(urlStr, fields, cookie, onResp, onErr, file){
         var chunks = [];
         res.on('data', function(d){ chunks.push(d); });
         res.on('end', function(){ finish(onResp, res.statusCode, res.headers, Buffer.concat(chunks).toString('utf8')); });
+        res.on('error', function(e){ finish(onErr, e.message); });
+        res.on('aborted', function(){ finish(onErr, 'connection dropped mid-response'); });
     });
     req.on('error', function(e){ finish(onErr, e.message); });
     req.setTimeout(TAP_SYNC_TIMEOUT, function(){ req.destroy(new Error('upload timed out after ' + (TAP_SYNC_TIMEOUT / 1000) + 's')); });
@@ -315,6 +322,8 @@ function httpGet(urlStr, cookie, onResp, onErr){
         var chunks = [];
         res.on('data', function(d){ chunks.push(d); });
         res.on('end', function(){ var raw = Buffer.concat(chunks); finish(onResp, res.statusCode, res.headers, raw.toString('utf8'), raw); });
+        res.on('error', function(e){ finish(onErr, e.message); });
+        res.on('aborted', function(){ finish(onErr, 'connection dropped mid-response'); });
     });
     req.on('error', function(e){ finish(onErr, e.message); });
     req.setTimeout(TAP_SYNC_TIMEOUT, function(){ req.destroy(new Error('TAP request timed out after ' + (TAP_SYNC_TIMEOUT / 1000) + 's')); });

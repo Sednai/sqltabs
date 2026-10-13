@@ -130,8 +130,13 @@ var Client = function(connstr, password, redshift){
                     self.query_cancelled = false;
                     err_callback("query cancelled by user's request");
                 } else {
+                    // Report server/connection errors as PGRES_FATAL_ERROR: the info-query
+                    // helpers (_getData) and the completion poller's fatal() check for
+                    // exactly this status and route it to their error callbacks. A fake
+                    // success with empty rows instead makes them dereference data[0][0]
+                    // on nothing and die mid-callback -- the Ctrl+I hang after a drop.
                     var ds = new Dataset({rows: [], fields: [], cmdStatus: ""});
-                    ds.resultStatus = "PGRES_BAD_RESPONSE";
+                    ds.resultStatus = "PGRES_FATAL_ERROR";
                     ds.resultError = err;
                     ds.resultErrorMessage = err.message;
                     self.Response.datasets.push(ds);
@@ -194,6 +199,22 @@ var Client = function(connstr, password, redshift){
     };
 
     this.client.on('notice', this.noticeHandler);
+
+    // pg emits 'error' on the client when the connection drops underneath us
+    // (server restart, network loss, admin pg_terminate_backend). With no
+    // listener that becomes an uncaught exception AND `connected` stays true
+    // forever, so Database._getClient keeps handing out the dead client: every
+    // later query fails "not queryable" and Object Info hangs. Mark it
+    // disconnected instead -- the next _getClient call builds a fresh client,
+    // which is the reconnect.
+    this.client.on('error', function(err){
+        console.log('postgres connection lost: ' + (err && err.message ? err.message : err));
+        self.connected = false;
+    });
+
+    this.client.on('end', function(){
+        self.connected = false;
+    });
 
 }
 
