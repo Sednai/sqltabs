@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
       # electron-builder needs the rpm toolchain to produce the Fedora .rpm
       - run: sudo apt-get update && sudo apt-get install -y rpm
       - run: npm install
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
       - run: npm install
       - run: npm run compile
       # builds both Intel (x64) and Apple Silicon (arm64) dmgs (arches come from
@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
       - run: npm install
       - run: npm run compile
       - run: npx electron-builder --win nsis --publish never
