@@ -340,7 +340,7 @@ var SqlDoc = React.createClass({
             return (
 
                 <div className="error alert alert-danger">
-                    SQLTABS ERROR. Please report the issue at <b>https://github.com/sasha-alias/sqltabs/issues</b> :<br/>
+                    SQLTABS ERROR. Please report the issue at <b>https://github.com/Sednai/sqltabs/issues</b> :<br/>
                     <pre>
                     {err.stack}
                     </pre>

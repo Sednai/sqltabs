@@ -5,7 +5,7 @@
   "description": "SQL Tabs - a browser for databases",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sasha-alias/sqltabs"
+    "url": "https://github.com/Sednai/sqltabs"
   },
   "license": "GPL-3.0",
   "main": "main.js",
