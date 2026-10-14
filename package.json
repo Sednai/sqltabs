@@ -58,8 +58,10 @@
         "rpm"
       ],
       "desktop": {
-        "Keywords": "sql;sqltabs;database;adql;tap;postgres;",
-        "StartupWMClass": "sqltabs"
+        "entry": {
+          "Keywords": "sql;sqltabs;database;adql;tap;postgres;",
+          "StartupWMClass": "sqltabs"
+        }
       }
     },
     "win": {
