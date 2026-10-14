@@ -35,7 +35,8 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 - **Cross-tables**, raw **CSV** view, and **Markdown** documentation blocks
 - **Object / database info** browser (tables, columns, indexes, constraints,
   functions, triggers, …), compatible with PostgreSQL 10 → current; on TAP
-  services it browses **schemas → tables → columns** from `TAP_SCHEMA`
+  services it browses **schemas → tables → columns** from the service's
+  **tableset** metadata (`GET <tap>/tables`), falling back to `TAP_SCHEMA`
 - **Share** a result (CSV + query) to a Nextcloud/ownCloud public folder, with a
   local **shared-queries history** (see below)
 - Query **history**, and a persistent **Vim** command/search history
@@ -111,14 +112,25 @@ uploaded results) in `TAP_SCHEMA`.
 - **String literals use single quotes** - `WHERE flag = 'false'`. Double quotes
   mean *identifiers* in ADQL, so `"false"` is read as a column name.
 - **`Ctrl/Cmd+I`** browses the service like Postgres Object Info does:
-  with nothing under the cursor it lists the service's **schemas** (from
-  `TAP_SCHEMA`), `Ctrl/Cmd+I` on `schema.` lists that schema's **tables**,
+  with nothing under the cursor it lists the service's **schemas**,
+  `Ctrl/Cmd+I` on `schema.` lists that schema's **tables**,
   and on a table name it shows its **columns** (name, datatype, unit,
   description), falling back to a `SELECT TOP 0` probe for tables
   `TAP_SCHEMA` does not describe (e.g. your own `user_table` tables).
-  Schemas that are queryable but published nowhere in `TAP_SCHEMA`
-  (some shared/internal Gaia ones) cannot be listed by any client -
-  the app says so rather than showing an empty list.
+  The schema and table lists come from the service's **tableset** - the
+  VOSI metadata document at `GET <tap>/tables?only_tables=true`, advertised
+  as the `ivo://ivoa.net/std/VOSI#tables-1.1` capability - because
+  `TAP_SCHEMA` is only the *published* subset. On the Gaia pre-release
+  archive, for instance, `TAP_SCHEMA` omits five queryable `user_*` schemas
+  entirely (`user_dr4rc3` alone holds 101 tables), and flags seven as
+  `esatapplus:public="false"`; the tableset lists all of them. There is no
+  `/schemas` read endpoint:
+  TAP+ serves `/tap/schemas` as its admin/modify resource and answers `500`
+  to ordinary users, and its `show_hidden` / `only_shared_tables` parameters
+  are accepted but ignored. If the tableset cannot be fetched the app falls
+  back to `TAP_SCHEMA`, and a schema published nowhere says so rather than
+  showing an empty list. The document is fetched once per endpoint and user
+  and shared with autocompletion, which already used it.
 - **Long-running queries:** the synchronous endpoint is aborted at the service's
   own short limit (an expensive `COUNT`/`JOIN` returns "Job timeout/aborted.").
   Prefix the block with [`--- async`](#sql-documents-block-directives) to run it

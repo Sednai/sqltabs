@@ -64,6 +64,10 @@ var HadWords = {};                        // "base|user" -> a fetch has succeede
 var DiskServed = {};                      // "base|user" -> the saved list was already served
 var FetchGen = {};                        // "base|user" -> bumped per fetch, so a slow
                                           // result cannot overwrite newer data
+var Tablesets = {};                       // "base|user" -> {at, schemas} from the VOSI /tables doc
+var TablesetWaiters = {};                 // "base|user" -> callbacks sharing an in-flight fetch
+var TablesetPending = {};                 // "base|user" -> a download is in flight (whoever started it)
+var TABLESET_TTL_MS = 10 * 60 * 1000;     // re-fetch the tableset after 10 min
 
 var ASYNC_POLL_MS = 1500;                 // delay between UWS phase polls
 var ASYNC_MAX_MS = 1800000;               // give up after 30 min of polling
@@ -410,6 +414,97 @@ function ensureSession(connstr, password, ok, fail){
     ok(null);                                               // no session yet, no password: best-effort anonymous
 }
 
+// ---- the service's tableset (VOSI 1.1 metadata document) ---------------------------------
+// GET <base>/tables (capability ivo://ivoa.net/std/VOSI#tables-1.1) is the only read API
+// that lists a TAP service's schemas COMPLETELY. TAP_SCHEMA is the published subset: on the
+// Gaia pre-release archive it omits five queryable `user_*` schemas (user_dr4int3,
+// user_dr4int5, user_dr4int6, user_dr4rc3, user_satgaia -- all readable, `SELECT TOP 1`
+// works), and marks them `esatapplus:public="false"` in the tableset instead. There is no
+// /schemas read endpoint: TAP+ serves /tap/schemas as its admin/modify resource and answers
+// 500 ("not allowed to modify tap schema") to ordinary users, and its show_hidden /
+// only_shared_tables parameters are accepted but ignored.
+//
+// The document is large (a few hundred KB even with only_tables=true), so it is fetched once
+// per (endpoint, user) and cached; the completion loader below fills the same cache it reads,
+// so opening Database Info after a connection costs no extra request.
+function parseTableset(text){
+    // Prefix-agnostic: the attribute namespace is `esatapplus` on Gaia's TAP+ but the
+    // prefix is implementation-defined, and plain VOSI services have none at all.
+    var schemas = [];
+    var chunks = String(text || '').split(/<schema\b/);
+    for (var i = 1; i < chunks.length; i++){
+        var block = chunks[i];
+        var close = block.indexOf('>');
+        if (close < 0){ continue; }
+        var attrs = block.slice(0, close);
+        if (/\/\s*$/.test(attrs)){ continue; } // self-closing <schema/>: no name, no tables
+        var tstart = block.indexOf('<table');
+        var head = tstart >= 0 ? block.slice(0, tstart) : block;
+        var nm = /<name>\s*([^<]*?)\s*<\/name>/.exec(head);
+        if (!nm || !nm[1]){ continue; }
+        var tables = [];
+        var tre = /<table\b[^>]*>[\s\S]*?<name>\s*([^<]*?)\s*<\/name>/g, tm;
+        while ((tm = tre.exec(block)) !== null){ if (tm[1]){ tables.push(tm[1]); } }
+        var pub = /:public="([^"]*)"/.exec(attrs);
+        schemas.push({
+            name: nm[1],
+            public: pub ? (pub[1] !== 'false') : true,
+            tables: tables,
+        });
+    }
+    return schemas.length ? schemas : null;
+}
+
+// Whoever downloads the tableset owns it for everyone: the completion loader and Database
+// Info both ask for the same document, and a second download of a few hundred KB from the
+// archive would be pure waste. claimTableset marks a download as started by the loader;
+// fulfill/fail hand the result to every queued caller (the loader's own answer does not go
+// through the queue -- it parses the names it already has in hand).
+function claimTableset(key){ TablesetPending[key] = true; }
+
+function fulfillTableset(c, schemas){
+    if (!c || !schemas){ return; }
+    var key = sessionKey(c);
+    delete TablesetPending[key];
+    Tablesets[key] = { at: Date.now(), schemas: schemas };
+    var waiters = TablesetWaiters[key];
+    if (!waiters){ return; }
+    delete TablesetWaiters[key];
+    for (var i = 0; i < waiters.length; i++){ waiters[i].ok(schemas); }
+}
+
+function failTableset(key, msg){
+    delete TablesetPending[key];
+    var waiters = TablesetWaiters[key];
+    if (!waiters){ return; }
+    delete TablesetWaiters[key];
+    for (var i = 0; i < waiters.length; i++){ waiters[i].fail(msg); }
+}
+
+// Resolve the cached tableset, fetching it (authenticated, so the user's own and shared
+// schemas are included) when it is absent or stale. ok(schemas) / fail(msg). Callers that
+// arrive while a download is in flight -- ours or the completion loader's -- are queued
+// onto it rather than starting another.
+function tableset(connstr, password, ok, fail){
+    var c = parseConn(connstr);
+    var key = sessionKey(c);
+    var cached = Tablesets[key];
+    if (cached && Date.now() - cached.at < TABLESET_TTL_MS){ ok(cached.schemas); return; }
+    if (TablesetPending[key] || TablesetWaiters[key]){
+        TablesetWaiters[key] = (TablesetWaiters[key] || []).concat([{ ok: ok, fail: fail }]);
+        return;
+    }
+    TablesetWaiters[key] = [{ ok: ok, fail: fail }];
+    claimTableset(key);
+    ensureSession(connstr, password, function(cookie){
+        httpGet(c.base + '/tables?only_tables=true', cookie, function(status, headers, text){
+            var schemas = (status >= 200 && status < 300) ? parseTableset(text) : null;
+            if (schemas){ fulfillTableset(c, schemas); }
+            else { failTableset(key, 'HTTP ' + status); }
+        }, function(e){ failTableset(key, String(e)); });
+    }, function(e){ failTableset(key, e.msg || 'login failed'); });
+}
+
 // Log in to the data-server (DataLink) context, which is separate from /tap-server and
 // issues its own Path=/data-server cookie. ok(cookie) / fail({status,msg}).
 function dataLogin(connstr, password, ok, fail, _attempt){
@@ -720,6 +815,7 @@ function bestKnownWords(key){
 // is still in flight that its result is now stale and must not be cached.
 function invalidateWords(key){
     delete SchemaWords[key];
+    delete Tablesets[key]; // the visible schema set changes with the session
     FetchGen[key] = (FetchGen[key] || 0) + 1;
 }
 
@@ -735,6 +831,7 @@ function noteUploadedTable(c, tableName){
         if (words.indexOf(full) < 0){ words.push(full); }
         if (words.indexOf('user_' + c.user) < 0){ words.push('user_' + c.user); }
         StaleWords[key] = true;
+        delete Tablesets[key]; // the new table has to show up under its schema next time
         SchemaCache.put(key, words); // keep it across restarts, not just until the next refetch
     } else {
         invalidateWords(key); // nothing cached yet: the next fetch is fresh anyway
@@ -1086,69 +1183,107 @@ var Database = {
 
         // Ctrl+I with nothing under the cursor -> database info: the service's
         // schemas, each clickable into its table list (same drill-down shape the
-        // postgres renderer uses, fed from TAP_SCHEMA instead of pg_catalog).
+        // postgres renderer uses).
         if (!tbl){
-            var finishDb = function(names){
+            var finishDb = function(names, note){
                 callback(id, {
                     object_type: 'database', object_name: host,
                     object: {
-                        version: 'IVOA TAP / ADQL service',
+                        version: 'IVOA TAP / ADQL service' + (note || ''),
                         schemas: names, roles: [], databases: [], tablespaces: [], event_triggers: [],
                     },
                 });
             };
-            // Gaia registers schemas inconsistently: some only in tap_schema.schemas,
-            // some (user tables) only in tap_schema.tables -- union both so neither
-            // kind is missing from the browse list.
-            var names = [], seen = {};
-            var addAll = function(csv){
-                var rows = parseCSV(csv);
-                for (var i = 1; i < rows.length; i++){
-                    var n = rows[i][0];
-                    if (n && !seen[n]){ seen[n] = 1; names.push(n); }
+            // TAP_SCHEMA is the fallback: it publishes only part of what is queryable,
+            // and Gaia registers schemas inconsistently even within it -- some only in
+            // tap_schema.schemas, some (user tables) only in tap_schema.tables -- so union
+            // both and let either half answer if the other is absent or fails.
+            var fromTapSchema = function(){
+                var names = [], seen = {};
+                var addAll = function(csv){
+                    var rows = parseCSV(csv);
+                    for (var i = 1; i < rows.length; i++){
+                        var n = rows[i][0];
+                        if (n && !seen[n]){ seen[n] = 1; names.push(n); }
+                    }
+                };
+                var fromTables = function(){
+                    tapSync(connstr, "SELECT DISTINCT schema_name FROM tap_schema.tables ORDER BY schema_name", password, id,
+                    function(csv2){ addAll(csv2); names.sort(); finishDb(names); },
+                    function(){ names.sort(); finishDb(names); });
+                };
+                tapSync(connstr, "SELECT schema_name FROM tap_schema.schemas ORDER BY schema_name", password, id,
+                function(csv){ addAll(csv); fromTables(); },
+                function(){ fromTables(); }); // schemas table absent/failed: tables alone still work
+            };
+            // The service's tableset is the primary source: unlike TAP_SCHEMA it lists
+            // every queryable schema, including Gaia's non-public `user_*` ones.
+            tableset(connstr, password, function(schemas){
+                var names = [], unpublished = 0;
+                for (var i = 0; i < schemas.length; i++){
+                    names.push(schemas[i].name);
+                    if (!schemas[i].public){ unpublished++; }
                 }
-            };
-            var fromTables = function(){
-                tapSync(connstr, "SELECT DISTINCT schema_name FROM tap_schema.tables ORDER BY schema_name", password, id,
-                function(csv2){ addAll(csv2); names.sort(); finishDb(names); },
-                function(){ names.sort(); finishDb(names); });
-            };
-            tapSync(connstr, "SELECT schema_name FROM tap_schema.schemas ORDER BY schema_name", password, id,
-            function(csv){ addAll(csv); fromTables(); },
-            function(){ fromTables(); }); // schemas table absent/failed: tables alone still work
+                names.sort();
+                finishDb(names, unpublished ? ' -- ' + unpublished +
+                    ' schema' + (unpublished > 1 ? 's' : '') + ' not published in TAP_SCHEMA' : '');
+            }, fromTapSchema);
             return;
         }
 
-        // Ctrl+I on "schema." -> schema info: its tables and views from TAP_SCHEMA.
+        // Ctrl+I on "schema." -> schema info: its tables and views.
         if (tbl.slice(-1) === '.'){
             var schema = tbl.slice(0, -1);
             var esc = schema.replace(/'/g, "''");
-            // no type column: the TAP_SCHEMA standard calls it `kind`, Gaia calls it
-            // `table_type`, and other services omit both -- list everything as a
-            // table (views still drill down fine via the TOP 0 probe fallback)
-            var tablesSql = "SELECT table_name FROM tap_schema.tables WHERE schema_name = '" + esc + "' ORDER BY table_name";
-            tapSync(connstr, tablesSql, password, id, function(csv){
-                var rows = parseCSV(csv);
-                var tables = [], views = [];
-                var prefix = schema + '.';
-                for (var i = 1; i < rows.length; i++){
-                    var name = String(rows[i][0] || '');
-                    if (name.indexOf(prefix) === 0) name = name.slice(prefix.length); // renderer re-qualifies
-                    if (!name) continue;
-                    tables.push(name);
-                }
-                if (tables.length === 0){
-                    // queryable-but-unpublished schemas (Gaia shared/internal ones)
-                    // have no TAP_SCHEMA rows: say so instead of an empty page
-                    err_callback(id, 'Schema "' + schema + '" is not published in this service\'s TAP_SCHEMA: ' +
-                        'its tables can be queried but not listed. (Published schemas come from tap_schema.tables.)');
-                    return;
-                }
+            var views = []; // no type column: the TAP_SCHEMA standard calls it `kind`, Gaia
+                            // calls it `table_type`, and other services omit both -- list
+                            // everything as a table (views still drill down fine via the
+                            // TOP 0 probe fallback)
+            var emitTables = function(tables){
                 callback(id, {
                     object_type: 'schema', object_name: schema,
                     object: { current_database: host, tables: tables, functions: [], views: views, sequences: [] },
                 });
-            }, function(msg){ err_callback(id, 'TAP_SCHEMA tables: ' + msg); });
+            };
+            var fromAdql = function(){
+                var tablesSql = "SELECT table_name FROM tap_schema.tables WHERE schema_name = '" + esc + "' ORDER BY table_name";
+                tapSync(connstr, tablesSql, password, id, function(csv){
+                    var rows = parseCSV(csv);
+                    var tables = [];
+                    var prefix = schema + '.';
+                    for (var i = 1; i < rows.length; i++){
+                        var name = String(rows[i][0] || '');
+                        if (name.indexOf(prefix) === 0) name = name.slice(prefix.length); // renderer re-qualifies
+                        if (!name) continue;
+                        tables.push(name);
+                    }
+                    if (tables.length === 0){
+                        // queryable-but-unpublished schemas (Gaia shared/internal ones)
+                        // have no TAP_SCHEMA rows: say so instead of an empty page
+                        err_callback(id, 'Schema "' + schema + '" is not published in this service\'s TAP_SCHEMA: ' +
+                            'its tables can be queried but not listed. (Published schemas come from tap_schema.tables.)');
+                        return;
+                    }
+                    emitTables(tables);
+                }, function(msg){ err_callback(id, 'TAP_SCHEMA tables: ' + msg); });
+            };
+            // The tableset covers the schemas TAP_SCHEMA omits: on the Gaia pre-release
+            // archive user_dr4rc3 has 101 queryable tables and no tap_schema.tables rows.
+            tableset(connstr, password, function(schemas){
+                for (var i = 0; i < schemas.length; i++){
+                    if (schemas[i].name !== schema){ continue; }
+                    var tables = [], prefix = schema + '.';
+                    for (var t = 0; t < schemas[i].tables.length; t++){
+                        var name = schemas[i].tables[t];
+                        if (name.indexOf(prefix) === 0) name = name.slice(prefix.length);
+                        if (name){ tables.push(name); }
+                    }
+                    tables.sort();
+                    emitTables(tables);
+                    return;
+                }
+                fromAdql(); // not in the tableset either: let TAP_SCHEMA answer (and explain)
+            }, fromAdql);
             return;
         }
         // split schema.table for the ObjectInfo header (it renders schema.relname); a
@@ -1335,18 +1470,34 @@ var Database = {
         // tap_schema.tables query omits. only_tables=true keeps the document small (names,
         // no column metadata). Needs the authenticated session cookie to see shared/user
         // tables. Falls back to TAP_SCHEMA if the request fails.
+        var reuse = Tablesets[key]; // Database Info downloaded it already?
+        if (reuse && Date.now() - reuse.at < TABLESET_TTL_MS){
+            gen = FetchGen[key] = (FetchGen[key] || 0) + 1;
+            reuse.schemas.forEach(function(s){
+                addName(s.name);
+                for (var t = 0; t < s.tables.length; t++){ addName(s.tables[t]); }
+            });
+            namesReady();
+            return;
+        }
+        claimTableset(key); // Database Info opening during this download queues onto it
         ensureSession(connstr, password, function(cookie){
             gen = FetchGen[key] = (FetchGen[key] || 0) + 1; // logging in has already invalidated
             httpGet(c.base + '/tables?only_tables=true', cookie, function(status, headers, text){
                 var names = [];
                 if (status >= 200 && status < 300){
+                    // Keep the parsed document: Database Info browses the same one, and a
+                    // second download of a few hundred KB would be the same request twice.
+                    var parsed = parseTableset(text);
+                    if (parsed){ fulfillTableset(c, parsed); }
+                    else { failTableset(key, 'unparsable tableset document'); }
                     var re = /<(?:\w+:)?name>([^<]+)<\/(?:\w+:)?name>/g, m;
                     while ((m = re.exec(text)) !== null){ names.push(m[1].trim()); }
                 }
                 if (names.length){ names.forEach(addName); namesReady(); }
-                else { fromTapSchema(); }
-            }, function(){ fromTapSchema(); });
-        }, function(){ delete Fetching[key]; publish(); }); // no session -> ADQL keywords only
+                else { failTableset(key, 'HTTP ' + status); fromTapSchema(); }
+            }, function(e){ failTableset(key, String(e)); fromTapSchema(); });
+        }, function(e){ failTableset(key, (e && e.msg) || 'login failed'); delete Fetching[key]; publish(); }); // no session -> ADQL keywords only
     }
 };
 
