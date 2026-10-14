@@ -112,7 +112,11 @@ app.on('ready', function() {
 
     if (!isDev()){
         const { autoUpdater } = require("electron-updater");
-        autoUpdater.checkForUpdatesAndNotify();
+        // the check returns a promise: a missing latest-linux.yml, an offline
+        // machine or a 404 must not become an unhandled rejection in the log
+        autoUpdater.checkForUpdatesAndNotify().catch(function(err){
+            console.log('update check failed: ' + (err && err.message ? err.message : err));
+        });
     }
 
     createWindow();
