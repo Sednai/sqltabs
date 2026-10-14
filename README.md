@@ -34,11 +34,17 @@ charts, and Markdown-annotated SQL "documents". Built on Electron.
 - **Charts** rendered inline with [c3.js](https://c3js.org) (see below)
 - **Cross-tables**, raw **CSV** view, and **Markdown** documentation blocks
 - **Object / database info** browser (tables, columns, indexes, constraints,
-  functions, triggers, …), compatible with PostgreSQL 10 → current
+  functions, triggers, …), compatible with PostgreSQL 10 → current; on TAP
+  services it browses **schemas → tables → columns** from `TAP_SCHEMA`
 - **Share** a result (CSV + query) to a Nextcloud/ownCloud public folder, with a
   local **shared-queries history** (see below)
 - Query **history**, and a persistent **Vim** command/search history
-- **SSH tunneling** to reach databases behind a bastion host
+- **SSH tunneling** to reach databases behind a bastion host; dead tunnels are
+  detected and rebuilt on next use
+- **Reconnection awareness**: when a connection drops (network, server restart,
+  an external `ssh -L` tunnel dying), the next query reconnects and a
+  non-blocking notice warns that the new backend session has no `SET` GUCs,
+  `search_path`, temp tables or open transaction
 - **Autosave & session restore** - open tabs and unsaved editor content are
   persisted to `~/.sqltabs/session.json` and restored on the next start
 
@@ -104,9 +110,15 @@ uploaded results) in `TAP_SCHEMA`.
 - **Top-N** uses `SELECT TOP n ...` (not `LIMIT`).
 - **String literals use single quotes** - `WHERE flag = 'false'`. Double quotes
   mean *identifiers* in ADQL, so `"false"` is read as a column name.
-- **`Ctrl/Cmd+I`** on a table name shows its columns (name, datatype, unit,
-  description) from `TAP_SCHEMA`, falling back to a `SELECT TOP 0` probe for
-  tables `TAP_SCHEMA` does not describe (e.g. your own `user_table` tables).
+- **`Ctrl/Cmd+I`** browses the service like Postgres Object Info does:
+  with nothing under the cursor it lists the service's **schemas** (from
+  `TAP_SCHEMA`), `Ctrl/Cmd+I` on `schema.` lists that schema's **tables**,
+  and on a table name it shows its **columns** (name, datatype, unit,
+  description), falling back to a `SELECT TOP 0` probe for tables
+  `TAP_SCHEMA` does not describe (e.g. your own `user_table` tables).
+  Schemas that are queryable but published nowhere in `TAP_SCHEMA`
+  (some shared/internal Gaia ones) cannot be listed by any client -
+  the app says so rather than showing an empty list.
 - **Long-running queries:** the synchronous endpoint is aborted at the service's
   own short limit (an expensive `COUNT`/`JOIN` returns "Job timeout/aborted.").
   Prefix the block with [`--- async`](#sql-documents-block-directives) to run it
