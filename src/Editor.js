@@ -65,6 +65,8 @@ var CANCEL_COMPLETION_KEYS = [37, 38, 39, 40, 33, 34, 35, 36, 27];
 // the list cannot be left stranded over a new line.
 var COMPLETION_DISMISS_KEYS = [37, 39, 27, 33, 34, 35, 36, 13];
 
+var buildExplainQuery = require('./ExplainUtils').buildExplainQuery;
+
 var Editor = React.createClass({
 
     getInitialState: function(){
@@ -114,6 +116,8 @@ var Editor = React.createClass({
         TabsStore.bind('close-file-'+this.props.eventKey, this.fileCloseHandler);
         TabsStore.bind('execute-script-'+this.props.eventKey, this.execHandler);
         TabsStore.bind('execute-block-'+this.props.eventKey, this.execBlockHandler);
+        TabsStore.bind('execute-explain-'+this.props.eventKey, this.execExplainHandler);
+        TabsStore.bind('execute-explain-analyze-'+this.props.eventKey, this.execExplainAnalyzeHandler);
         TabsStore.bind('execute-all-'+this.props.eventKey, this.execAllHandler);
         TabsStore.bind('format-block-'+this.props.eventKey, this.reFormatBlockHandler);
         TabsStore.bind('format-all-'+this.props.eventKey, this.reFormatAllHandler);
@@ -234,6 +238,8 @@ var Editor = React.createClass({
         TabsStore.unbind('save-file-'+this.props.eventKey, this.fileCloseHandler);
         TabsStore.unbind('execute-script-'+this.props.eventKey, this.execHandler);
         TabsStore.unbind('execute-block-'+this.props.eventKey, this.execBlockHandler);
+        TabsStore.unbind('execute-explain-'+this.props.eventKey, this.execExplainHandler);
+        TabsStore.unbind('execute-explain-analyze-'+this.props.eventKey, this.execExplainAnalyzeHandler);
         TabsStore.unbind('execute-all-'+this.props.eventKey, this.execAllHandler);
         TabsStore.unbind('format-block-'+this.props.eventKey, this.reFormatBlockHandler);
         TabsStore.unbind('format-all-'+this.props.eventKey, this.reFormatAllHandler);
@@ -317,6 +323,33 @@ var Editor = React.createClass({
         }
         Actions.runQuery(this.props.eventKey, script);
 
+    },
+
+    execExplainHandler: function(){
+        this.execBlockExplain(false);
+    },
+
+    execExplainAnalyzeHandler: function(){
+        this.execBlockExplain(true);
+    },
+
+    execBlockExplain: function(analyze){
+        // same target rule as Execute Block: selection wins, else the "---"
+        // block around the cursor
+        var selected = this.editor.getSelectedText();
+        var script;
+        if (selected) {
+            script = selected;
+        } else {
+            var current_line = this.editor.selection.getCursor().row;
+            script = this.detectBlock(current_line, this.editor.getValue);
+        }
+        var query = buildExplainQuery(script, analyze);
+        if (query == null){ return; }
+        // the buffer is NOT modified: no undo noise, the cursor stays, and
+        // Ctrl+E on the same block still runs plain SQL. History records the
+        // EXPLAIN form (Dispatcher 'run-query' pushes what was executed).
+        Actions.runQuery(this.props.eventKey, query);
     },
 
     execAllHandler: function(){
@@ -604,6 +637,12 @@ var Editor = React.createClass({
         var chord = MODIFIER_KEYS.indexOf(e.keyCode) < 0 &&
                     ((e.ctrlKey && !e.altKey) || e.metaKey);
 
+        // Alt+letter app shortcuts (Alt+X explain-analyze) are chords too, but only
+        // for the recompute-cancel below: AltGr combos (ctrl+alt) produce text and
+        // must keep their queued completion, so altChord deliberately excludes ctrlKey.
+        var altChord = !e.ctrlKey && !e.metaKey && e.altKey &&
+                       MODIFIER_KEYS.indexOf(e.keyCode) < 0;
+
         // Plain Tab accepts a hint and Shift+Tab walks back, but Ctrl/Cmd+Tab switches app
         // tabs and Alt+Tab is the window switcher -- those must not be swallowed.
         if (e.keyCode == 9 && !chord && !e.altKey){
@@ -656,7 +695,7 @@ var Editor = React.createClass({
                     self.adjustCompletion();
                 }, 120);
             }
-        } else if (chord || CANCEL_COMPLETION_KEYS.indexOf(e.keyCode) != -1){
+        } else if (chord || altChord || CANCEL_COMPLETION_KEYS.indexOf(e.keyCode) != -1){
             // Moving the caret (or invoking a shortcut) cancels a recompute queued by the
             // previous keystroke -- otherwise typing and immediately navigating away pops
             // the list at the new position, since the debounced callback only ever looks at

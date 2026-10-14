@@ -272,6 +272,8 @@ More runnable examples live in [`examples/`](examples/).
 | Execute block | `Ctrl/Cmd+E` |
 | Cancel running block | `Ctrl/Cmd+B` |
 | Execute all blocks | `Ctrl/Cmd+Shift+E` |
+| Explain block / selection | `Ctrl+Shift+X` / `Cmd+Shift+X` |
+| Explain ANALYZE block / selection | `Alt+X` / `Cmd+Alt+X` |
 | Auto-format block / all | `Ctrl/Cmd+K` / `Ctrl/Cmd+Shift+K` |
 | Object info under cursor | `Ctrl/Cmd+I` |
 | Edit connection string | `Ctrl/Cmd+L` |
@@ -279,6 +281,11 @@ More runnable examples live in [`examples/`](examples/).
 | History | `Ctrl+H` / `Cmd+Y` |
 | Shared queries | `Ctrl/Cmd+Shift+Y` |
 | New / close tab | `Ctrl/Cmd+T` / `Ctrl/Cmd+W` |
+
+`EXPLAIN` is inserted after any leading `--- marker` line, so `--- csv`/`--- chart`
+directives keep working; the editor text itself is not modified. Note that
+`EXPLAIN ANALYZE` **executes** the statement — on `INSERT`/`UPDATE`/`DELETE` the
+writes happen.
 
 ## Running from source
 

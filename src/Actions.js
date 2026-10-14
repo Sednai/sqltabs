@@ -209,6 +209,18 @@ var Actions = {
         });
     },
 
+    execExplain: function(){
+        SignalsDispatcher.dispatch({
+            eventName: 'execute-explain',
+        });
+    },
+
+    execExplainAnalyze: function(){
+        SignalsDispatcher.dispatch({
+            eventName: 'execute-explain-analyze',
+        });
+    },
+
     formatBlock: function(){
         SignalsDispatcher.dispatch({
             eventName: 'format-block',
