@@ -61,6 +61,9 @@ jobs:
           name: mac-installer
           path: |
             dist/*.dmg
+            # the updater downloads the zips (latest-mac.yml points at them);
+            # dmgs are only for manual install
+            dist/*.zip
             dist/latest-mac.yml
 
   windows:
