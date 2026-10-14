@@ -178,6 +178,12 @@ function parseCSV(text){
 function errorFromBody(status, body){
     var m = /<INFO name="QUERY_STATUS" value="ERROR">([\s\S]*?)<\/INFO>/.exec(body || '');
     if (m){ return m[1].trim(); }
+    // HTML error page (service-side failure, not a query error): prefer the
+    // "Message:" line over dumping raw markup at the user
+    var msg = /Message:\s*([\s\S]{10,}?)\s*(?:Cannot process request|<\/p>|<br|<div|<p|$)/i.exec(body || '');
+    if (msg){
+        return 'HTTP ' + status + ': ' + unescapeXml(msg[1].replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 500);
+    }
     if (body && body.trim()){ return body.trim().slice(0, 1000); }
     return 'TAP request failed (HTTP ' + status + ')';
 }
@@ -227,9 +233,15 @@ function encodeParams(params){
 // Tomcat page; extract a short human message from whichever it is.
 function dlError(status, body){
     var v = /value="ERROR">([\s\S]*?)<\/INFO>/.exec(body || '');
-    if (v){ return v[1].replace(/\s+/g, ' ').trim().slice(0, 200); }
+    if (v){ return v[1].replace(/\s+/g, ' ').trim().slice(0, 500); }
+    // the data-server's HTML error page buries the real cause in a "Message:"
+    // line; the <h1>/<title> is only the generic "SERVICE ERROR - 500"
+    var msg = /Message:\s*([\s\S]{10,}?)\s*(?:Cannot process request|<\/p>|<br|<div|<p|$)/i.exec(body || '');
+    if (msg){
+        return 'HTTP ' + status + ': ' + unescapeXml(msg[1].replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 500);
+    }
     var h = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(body || '') || /<title>([\s\S]*?)<\/title>/i.exec(body || '');
-    if (h){ return h[1].replace(/\s+/g, ' ').trim().slice(0, 200); }
+    if (h){ return h[1].replace(/\s+/g, ' ').trim().slice(0, 500); }
     return 'HTTP ' + status;
 }
 
@@ -607,7 +619,10 @@ function tapDataLink(connstr, ids, retrievalType, release, password, ok, fail){
             var sid = ids[idx];
             // One id per request -> plain CSV (multiple comma-separated ids return a ZIP).
             var u = base + '?ID=' + encodeURIComponent(release + ' ' + sid) +
-                    '&RETRIEVAL_TYPE=' + encodeURIComponent(retrievalType) + '&FORMAT=CSV&DATA_STRUCTURE=INDIVIDUAL';
+                    // DATAMODEL_STANDARD: INDIVIDUAL was deprecated on the archive
+                    // (both gea and geapre now answer 500 "The 'INDIVIDUAL' data
+                    // structure has been deprecated - use 'DATAMODEL_STANDARD'")
+                    '&RETRIEVAL_TYPE=' + encodeURIComponent(retrievalType) + '&FORMAT=CSV&DATA_STRUCTURE=DATAMODEL_STANDARD';
             httpGet(u, cookie, function(status, headers, text, raw){
                 if (status === 401 && !retried && c.user && password){ // session expired -> relogin once, retry
                     relogin(function(fresh){
