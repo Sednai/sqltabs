@@ -1082,8 +1082,73 @@ var Database = {
         // Ctrl+I on a TAP table -> its columns, from TAP_SCHEMA (authenticated, so the
         // user's own user_<name> tables work too). Strip trailing ';' and any quotes.
         var tbl = String(object == null ? '' : object).trim().replace(/;+\s*$/, '').replace(/"/g, '');
+        var host = parseConn(connstr).base.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+        // Ctrl+I with nothing under the cursor -> database info: the service's
+        // schemas, each clickable into its table list (same drill-down shape the
+        // postgres renderer uses, fed from TAP_SCHEMA instead of pg_catalog).
         if (!tbl){
-            err_callback(id, 'Put the cursor on a table name (e.g. gaiadr3.gaia_source) and press Ctrl/Cmd+I');
+            var finishDb = function(names){
+                callback(id, {
+                    object_type: 'database', object_name: host,
+                    object: {
+                        version: 'IVOA TAP / ADQL service',
+                        schemas: names, roles: [], databases: [], tablespaces: [], event_triggers: [],
+                    },
+                });
+            };
+            // Gaia registers schemas inconsistently: some only in tap_schema.schemas,
+            // some (user tables) only in tap_schema.tables -- union both so neither
+            // kind is missing from the browse list.
+            var names = [], seen = {};
+            var addAll = function(csv){
+                var rows = parseCSV(csv);
+                for (var i = 1; i < rows.length; i++){
+                    var n = rows[i][0];
+                    if (n && !seen[n]){ seen[n] = 1; names.push(n); }
+                }
+            };
+            var fromTables = function(){
+                tapSync(connstr, "SELECT DISTINCT schema_name FROM tap_schema.tables ORDER BY schema_name", password, id,
+                function(csv2){ addAll(csv2); names.sort(); finishDb(names); },
+                function(){ names.sort(); finishDb(names); });
+            };
+            tapSync(connstr, "SELECT schema_name FROM tap_schema.schemas ORDER BY schema_name", password, id,
+            function(csv){ addAll(csv); fromTables(); },
+            function(){ fromTables(); }); // schemas table absent/failed: tables alone still work
+            return;
+        }
+
+        // Ctrl+I on "schema." -> schema info: its tables and views from TAP_SCHEMA.
+        if (tbl.slice(-1) === '.'){
+            var schema = tbl.slice(0, -1);
+            var esc = schema.replace(/'/g, "''");
+            // no type column: the TAP_SCHEMA standard calls it `kind`, Gaia calls it
+            // `table_type`, and other services omit both -- list everything as a
+            // table (views still drill down fine via the TOP 0 probe fallback)
+            var tablesSql = "SELECT table_name FROM tap_schema.tables WHERE schema_name = '" + esc + "' ORDER BY table_name";
+            tapSync(connstr, tablesSql, password, id, function(csv){
+                var rows = parseCSV(csv);
+                var tables = [], views = [];
+                var prefix = schema + '.';
+                for (var i = 1; i < rows.length; i++){
+                    var name = String(rows[i][0] || '');
+                    if (name.indexOf(prefix) === 0) name = name.slice(prefix.length); // renderer re-qualifies
+                    if (!name) continue;
+                    tables.push(name);
+                }
+                if (tables.length === 0){
+                    // queryable-but-unpublished schemas (Gaia shared/internal ones)
+                    // have no TAP_SCHEMA rows: say so instead of an empty page
+                    err_callback(id, 'Schema "' + schema + '" is not published in this service\'s TAP_SCHEMA: ' +
+                        'its tables can be queried but not listed. (Published schemas come from tap_schema.tables.)');
+                    return;
+                }
+                callback(id, {
+                    object_type: 'schema', object_name: schema,
+                    object: { current_database: host, tables: tables, functions: [], views: views, sequences: [] },
+                });
+            }, function(msg){ err_callback(id, 'TAP_SCHEMA tables: ' + msg); });
             return;
         }
         // split schema.table for the ObjectInfo header (it renders schema.relname); a
