@@ -31,6 +31,19 @@ var Tunnels = {};
 var TunnelPorts = {};
 var PortSequence = 15000;
 
+// default error sink for paths that used to call an undefined err_callback
+// (a TypeError inside the tunnel error handler left the completion poller's
+// in-progress flag stuck for the whole app session)
+var logError = function(id, err){ console.log('executor error (tab '+id+'): '+err); };
+
+// the ssh://... half of a connstr, or '' when there is none -- used to tell
+// whether editing a connstr invalidated the tab's tunnel
+var sshPart = function(connstr){
+    if (!connstr) return '';
+    var parts = connstr.split('|').map(function(s){ return s.trim(); });
+    return (parts.length > 1 && parts[0].indexOf('ssh://') === 0) ? parts[0] : '';
+};
+
 function resolveHome(filepath) {
     if (filepath.charAt(0) === '~') {
         return path.join(process.env.HOME, filepath.slice(1));
@@ -39,6 +52,10 @@ function resolveHome(filepath) {
 }
 
 var Executor = {
+
+    // set by Dispatcher: fired when a tab's DB session reconnects after an
+    // unexpected drop (id, connstr)
+    onSessionRestored: null,
 
     getDatabase: function(id, connstr, callback, err_callback){
 
@@ -55,7 +72,7 @@ var Executor = {
 
     },
 
-    getConnector: function(connstr){
+    getConnector: function(connstr, rawConnstr){
         var db = postgres;
         if  (connstr == '' || connstr == null || connstr.indexOf('alasql://') == 0){
             db = alasql;
@@ -66,16 +83,39 @@ var Executor = {
             db = tap; // IVOA TAP / ADQL service (e.g. ESA Gaia archive)
         }
         db.connstr = connstr;
+        // for tunneled connections `connstr` is the mapped localhost:<ephemeral port>
+        // url, which changes every time the tunnel is rebuilt; caches that must
+        // survive a rebuild key on the raw connstr instead
+        db.rawConnstr = (typeof rawConnstr == 'string') ? rawConnstr : connstr;
         return db;
     },
 
-    testSSH: function(id, config, callback, err_callback){ // eslint-disable-line no-unused-vars
+    sshPart: sshPart,
+
+    testSSH: function(id, config, callback, err_callback){
+        // single-fire: the probe socket is itself an incoming tunnel connection,
+        // so its failure can race with the server's own error handling
+        var done = false;
         var client = net.connect({host: config.localHost, port: config.localPort},
-            function(){callback();}
+            function(){
+                if (done) return;
+                done = true;
+                client.end();
+                callback();
+            }
         );
+        client.setTimeout(5000, function(){
+            if (done) return;
+            done = true;
+            client.end();
+            err_callback('ssh probe timed out');
+        });
         client.on('error', function(e){
             console.log("test ssh error: "+e);
+            if (done) return;
+            done = true;
             client.end();
+            err_callback(e);
         });
     },
 
@@ -121,10 +161,13 @@ var Executor = {
 
         var mapped_db_url;
         if (id in Tunnels){
+            // safe to reuse unconditionally: a dying tunnel evicts its own entry
+            // (see the 'error'/'close' listeners below), so a dead port is never
+            // handed out again
             console.log('reuse tunnel: '+id);
             var port = TunnelPorts[id];
             mapped_db_url = db_url.protocol+'//'+auth+'localhost:'+port+url_path;
-            return callback(self.getConnector(mapped_db_url));
+            return callback(self.getConnector(mapped_db_url, connstr));
         } else {
             console.log('create tunnel: '+id);
             PortSequence = PortSequence + 1;
@@ -138,7 +181,13 @@ var Executor = {
                 dstPort: db_url.port,
                 localHost:'127.0.0.1',
                 localPort: PortSequence,
+                // keepAlive is a tunnel-ssh option: without it the local listener
+                // closes as soon as the last pg connection drops (e.g. between
+                // completion polls). keepaliveInterval is the ssh2 option that
+                // actually pings the server so NAT/firewalls don't silently reap
+                // idle tunnels (ssh2 defaults it to 0 = off).
                 keepAlive: true,
+                keepaliveInterval: 30000,
                 readyTimeout: 30000,
             };
 
@@ -154,7 +203,7 @@ var Executor = {
 
                 if (error){
                     console.log(error);
-                    err_callback(id, "create ssh tunnel error: "+error);
+                    (err_callback || logError)(id, "create ssh tunnel error: "+error);
                     return;
                 }
 
@@ -162,18 +211,32 @@ var Executor = {
                 TunnelPorts[id] = PortSequence;
 
                 self.testSSH(id, ssh_config, function(){
-                    return callback(self.getConnector(mapped_db_url));
+                    return callback(self.getConnector(mapped_db_url, connstr));
                 }, function(err){
                     console.log(err);
-                    err_callback(id, "ssh tunnel error: "+err);
+                    (err_callback || logError)(id, "ssh tunnel error: "+err);
                 });
             });
 
+            // Evict the cache entry whenever this tunnel dies, so the next
+            // getDatabase rebuilds it on a fresh port instead of serving
+            // ECONNREFUSED forever. The dominant death path is 'close'
+            // (tunnel-ssh closes the listener when the SSH channel errors,
+            // without emitting 'error' first); 'error' covers handshake and
+            // per-connection failures. Identity guard: a dying tunnel must
+            // never evict the replacement registered under the same id.
             ssh_server.on('error', function(err){
-                console.log(ssh_server.config);
-                err_callback(id, err);
+                console.log('ssh tunnel error (tab '+id+'): '+err);
+                if (err_callback) err_callback(id, err);
+                if (Tunnels[id] === ssh_server) self.releaseTunnel(id);
             });
 
+            ssh_server.on('close', function(){
+                if (Tunnels[id] === ssh_server){
+                    console.log('ssh tunnel closed (tab '+id+'): will be recreated on next use');
+                    self.releaseTunnel(id);
+                }
+            });
 
         }
     },
@@ -181,11 +244,22 @@ var Executor = {
     releaseTunnel: function(id){
         var srv = Tunnels[id];
         if (typeof(srv) != 'undefined'){
-            srv.close();
-            srv.removeAllListeners();
+            // delete first, drop listeners before close(): our own 'close'
+            // handler must not re-enter and evict a tunnel a newer call has
+            // already registered under this id
             delete Tunnels[id];
             delete TunnelPorts[id];
+            try {
+                srv.removeAllListeners();
+                srv.close();
+            } catch(e){ console.log(e); }
         }
+    },
+
+    // full per-tab teardown: tunnel plus any per-session connector state
+    releaseTab: function(id){
+        this.releaseTunnel(id);
+        postgres.forgetSession(id);
     },
 
     runQuery: function(id, connstr, password, query, callback, err_callback){
@@ -199,19 +273,19 @@ var Executor = {
     cancelQuery: function(id, connstr){
         this.getDatabase(id, connstr, function(db){
             db.cancelQuery(id);
-        });
+        }, logError);
     },
 
     getObjectInfo: function(id, connstr, password, object, callback, err_callback){
         this.getDatabase(id, connstr, function(db){
             db.getObjectInfo(id, db.connstr, password, object, callback, err_callback);
-        });
+        }, err_callback || logError);
     },
 
     runBlocks: function(id, connstr, password, blocks, callback, err_callback){
         this.getDatabase(id, connstr, function(db){
             db.runBlocks(id, db.connstr, password, blocks, callback, err_callback);
-        });
+        }, err_callback || logError);
     },
 
 
@@ -223,15 +297,29 @@ var Executor = {
         err_callback);
     },
 
-    getCompletionWords: function(connstr, callback){
+    // id is the representative tab for this connstr: the poll then reuses that
+    // tab's tunnel instead of minting a second one under a shared fake id, and
+    // the error path always resolves so the caller's in-progress flag clears
+    // (a stuck flag silently killed autocompletion for the whole session after
+    // one tunnel failure)
+    getCompletionWords: function(id, connstr, callback, err_callback){
         if (connstr){
-            this.getDatabase(0, connstr, function(db){
-                db.getCompletionWords(callback)
+            this.getDatabase(id, connstr, function(db){
+                db.getCompletionWords(callback);
+            }, function(tid, err){
+                if (err_callback) err_callback(tid, err); else logError(tid, err);
+                callback(null);
             });
         } else {
             callback([]);
         }
     },
+};
+
+// bridge the connector hook without an import cycle (Dispatcher requires
+// Executor, so Executor must not require Dispatcher)
+postgres.onSessionRestored = function(id, connstr){
+    if (Executor.onSessionRestored) Executor.onSessionRestored(id, connstr);
 };
 
 module.exports = Executor;
