@@ -22,6 +22,28 @@ var Words = require('./keywords.js');
 
 var Clients = {}; // clients used for executing user queries
 var InfoClients = {}; // clients used for getting info about objects
+
+// Per-tab session state for the "connection re-established" notice. Lives here,
+// not on PqClient, because _getClient replaces the client object on every drop
+// -- a per-instance flag would always be false on the reconnecting instance.
+// `lost` is set when a user-query client dies unexpectedly and consumed by the
+// next successful connect. testConnection installs a fresh object for
+// user-initiated reconnects (Ctrl+L, connstr or password change), so those --
+// and the first-ever connect -- never raise the notice; abandoned clients then
+// write to the orphaned object harmlessly.
+var SessionState = {};
+
+function attachSessionHooks(client, id){
+    var s = SessionState[id];
+    if (!s){ s = SessionState[id] = { lost: false }; }
+    client.onSessionLost = function(){ s.lost = true; };
+    client.onConnect = function(){
+        if (s.lost){
+            s.lost = false;
+            if (Database.onSessionRestored) Database.onSessionRestored(id, client.connstr);
+        }
+    };
+}
 var AutocompletionHashes = {}; // legacy; superseded by the bucketed cache below
 
 // ---------------------------------------------------------------------------
@@ -93,6 +115,12 @@ var Database = {
 
     redshift: false,
 
+    // set by Executor: called when a tab's query session reconnects after an
+    // unexpected drop (id, connstr)
+    onSessionRestored: null,
+
+    forgetSession: function(id){ delete SessionState[id]; },
+
     _getClient: function(id, connstr, password, cache){
 
         var client;
@@ -108,6 +136,9 @@ var Database = {
             client = new PqClient(connstr, password, this.redshift);
             cache[id] = client;
         }
+        // session-restored notices concern user queries only: info clients and
+        // the completion poller must never raise (or mark lost) the banner
+        if (cache === Clients){ attachSessionHooks(client, id); }
         return client;
     },
 
@@ -136,11 +167,16 @@ var Database = {
 
     runBlocks: function(id, connstr, password, blocks, callback, err_callback){
         var results = [];
-        var client = this.getClient(id, connstr, password);
+        var self = this;
 
         var calls = [];
         for (var i=0; i<blocks.length; i++){
             var call = function(block){return function(done){
+                // resolve the client per block, not once for the series: if the
+                // connection (or its tunnel) dies mid-run, _getClient builds a
+                // fresh one for the next block instead of failing every
+                // remaining block on the dead client
+                var client = self.getClient(id, connstr, password);
                 client.sendQuery(block,
                 function(result){
                     results.push(result);
@@ -168,6 +204,9 @@ var Database = {
         // client cached forever, so reconnecting never fixed a hung Ctrl+I.
         delete Clients[id];
         delete InfoClients[id];
+        // a user-initiated reconnect is not a surprise: start the session state
+        // fresh so the "re-established" notice does not fire for it
+        SessionState[id] = { lost: false };
 
         var client = this.getClient(id, connstr, password);
 
@@ -1126,10 +1165,27 @@ order by 1 \
         // before calling us; capture it synchronously so concurrent per-connstr polls from
         // Dispatcher don't race on the shared singleton.
         var connstr = this.connstr;
-        var fatal = function(res){ return res.datasets.length > 0 && res.datasets[0].resultStatus == 'PGRES_FATAL_ERROR'; };
+        // For ssh-tunneled connections `connstr` is the mapped localhost:<ephemeral
+        // port> url, which changes every time the tunnel is rebuilt -- keying the
+        // word cache by it orphaned the whole catalog on every reconnect. The raw
+        // connstr (set by Executor.getConnector) is stable.
+        var cacheKey = this.rawConnstr || connstr;
+        var fatal = function(res){
+            for (var i = 0; i < res.datasets.length; i++){
+                if (res.datasets[i].resultStatus == 'PGRES_FATAL_ERROR'){ return true; }
+            }
+            return false;
+        };
+        // first dataset that actually carries rows (a NOTICE dataset can precede it)
+        var rowsOf = function(res){
+            for (var i = 0; i < res.datasets.length; i++){
+                if (Array.isArray(res.datasets[i].data)){ return res.datasets[i].data; }
+            }
+            return [];
+        };
 
-        var cache = CompletionCache[connstr];
-        if (cache == null){ cache = CompletionCache[connstr] = { gate: null, polls: 0, buckets: {}, words: null, dirty: true }; }
+        var cache = CompletionCache[cacheKey];
+        if (cache == null){ cache = CompletionCache[cacheKey] = { gate: null, polls: 0, buckets: {}, words: null, dirty: true }; }
 
         // returned list = base keywords + only THIS connection's cached catalog words
         var buildWords = function(){
@@ -1156,7 +1212,8 @@ order by 1 \
         gateClient.sendQuery(COMPLETION_GATE_SQL, function(gres){
             cache.polls += 1;
             var ok = !fatal(gres);
-            var gate = (ok && gres.datasets[0].data.length > 0) ? gres.datasets[0].data[0][0] : null;
+            var grows = rowsOf(gres);
+            var gate = (ok && grows.length > 0) ? grows[0][0] : null;
             gateClient.disconnect();
             if (!ok){ finish(); return; }
 
@@ -1173,7 +1230,7 @@ order by 1 \
                 digestClient.disconnect();
                 if (!dok){ finish(); return; }
 
-                var rows = dres.datasets[0].data; // [b, c, h]
+                var rows = rowsOf(dres); // [b, c, h]
                 var newSig = {};
                 for (var i = 0; i < rows.length; i++){
                     var bn = parseInt(rows[i][0], 10);
@@ -1199,7 +1256,7 @@ order by 1 \
                     fetchClient.disconnect();
                     if (!fok){ finish(); return; }
 
-                    var frows = fres.datasets[0].data; // [word, b]
+                    var frows = rowsOf(fres); // [word, b]
                     var grouped = {};
                     for (var j = 0; j < frows.length; j++){
                         var gb = frows[j][1];

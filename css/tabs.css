@@ -691,3 +691,24 @@ path.link{
 }
 
 /* */
+
+/* ReconnectNotice: non-blocking banner. The bootstrap .modal wrapper covers the
+   whole viewport, so it must be click-through; only the notice card itself takes
+   clicks. Positioned top-right, clear of the tabs bar and the output area. */
+.reconnect-modal{
+    pointer-events: none;
+}
+.reconnect-notice{
+    pointer-events: auto;
+    position: fixed;
+    top: 12px;
+    right: 16px;
+    left: auto;
+    width: 460px;
+    margin: 0;
+    z-index: 1060;
+    border-left: 4px solid #f0ad4e;
+}
+.reconnect-warning{
+    margin-bottom: 0;
+}

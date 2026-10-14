@@ -42,6 +42,12 @@ SignalsDispatcher.register(function(payload){
             TabsStore.setRenderer('auto');
             TabsStore.trigger('execute-all-'+TabsStore.selectedTab);
             break;
+        case 'execute-explain':
+        case 'execute-explain-analyze':
+            // 'auto' is required: the PGPlan tree only renders in document mode
+            TabsStore.setRenderer('auto');
+            TabsStore.trigger(payload.eventName+'-'+TabsStore.selectedTab);
+            break;
         case 'format-block':
             TabsStore.setRenderer('auto');
             TabsStore.trigger('format-block-'+TabsStore.selectedTab);
@@ -120,6 +126,9 @@ AppDispatcher.register( function(payload) {
                 tab = payload.key;
             }
             TabsStore.closeTab(tab);
+            // release the tab's ssh tunnel (if any) and per-session state:
+            // previously tunnels leaked for the life of the process
+            Executor.releaseTab(tab);
             TabsStore.trigger('change');
             break;
 
@@ -188,6 +197,11 @@ AppDispatcher.register( function(payload) {
             break;
 
         case 'set-connection':
+            // if the ssh:// half changed, the cached tunnel forwards to the old
+            // bastion/target -- drop it so the new connstr gets a fresh tunnel
+            if (Executor.sshPart(TabsStore.getConnstr(payload.key)) !== Executor.sshPart(payload.value)){
+                Executor.releaseTunnel(payload.key);
+            }
             // setConnection loads the password saved for payload.value (if any); don't
             // reset it here or a saved connection would always connect with no password.
             TabsStore.setConnection(payload.key, payload.value);
@@ -289,6 +303,12 @@ AppDispatcher.register( function(payload) {
         case 'editor-find-next':
             TabsStore.setSearchValue(payload.value);
             TabsStore.trigger('editor-find-next');
+            break;
+
+        case 'session-restored':
+            // a tab's DB session reconnected after an unexpected drop: the new
+            // backend session has no SET GUCs / search_path / temp tables
+            TabsStore.trigger('session-restored', payload.key);
             break;
 
         case 'about':
@@ -427,6 +447,12 @@ DBDispatcher.register(function(payload){
     return true; // Needed for Flux promise resolution
 });
 
+// a tab's DB session came back after an unexpected drop: tell the banner.
+// Dispatched from a pg I/O callback, same shape as QueryCallback in Actions.js.
+Executor.onSessionRestored = function(id, connstr){
+    AppDispatcher.dispatch({ eventName: 'session-restored', key: id, connstr: connstr });
+};
+
 // background job for fetching auto completion words from databases.
 // Runs over the DISTINCT connection strings of open tabs (not once per tab) and
 // only clears the in-progress flag after ALL of them have finished, so the next
@@ -439,20 +465,22 @@ var updateCompletionWords = function(){
     }
 
     var seen = {};
-    var connstrs = [];
+    var jobs = [];
     for (var tab in TabsStore.tabs){
         var cs = TabsStore.getConnstr(tab);
         if (cs && !seen[cs]){
             seen[cs] = true;
-            connstrs.push(cs);
+            jobs.push({ id: tab, cs: cs }); // representative tab: the poll reuses
+                                           // that tab's tunnel instead of minting
+                                           // a second one under a shared fake id
         }
     }
-    if (connstrs.length === 0){
+    if (jobs.length === 0){
         return;
     }
 
     wordsUpdateInProgress = true;
-    var pending = connstrs.length;
+    var pending = jobs.length;
     var done = function(cs, words){
         if (words){
             TabsStore.updateCompletionWords(cs, words);
@@ -463,8 +491,15 @@ var updateCompletionWords = function(){
             TabsStore.trigger("completion-update");
         }
     };
-    connstrs.forEach(function(cs){
-        Executor.getCompletionWords(cs, function(words){ done(cs, words); });
+    jobs.forEach(function(job){
+        Executor.getCompletionWords(job.id, job.cs,
+            function(words){ done(job.cs, words); },
+            function(id, err){
+                // a dead tunnel must not strand the flag (that silently killed
+                // autocompletion for the whole session) -- resolve as "no words"
+                console.log('completion poll skipped: '+err);
+                done(job.cs, null);
+            });
     });
 }
 // Typing is the other activity signal (a mouse-only session reading results never needs

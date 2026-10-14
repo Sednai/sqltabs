@@ -37,6 +37,7 @@ var Config = require('./Config');
 var Actions = require('./Actions');
 var CloudMessage = require('./CloudMessage');
 var UpgradeMessage = require('./UpgradeMessage');
+var ReconnectNotice = require('./ReconnectNotice');
 var SessionStore = require('./SessionStore');
 
 require('electron').ipcRenderer.on('open-file', function(event, path) {
@@ -83,6 +84,7 @@ var App = React.createClass({
                 <SharedQueries/>
                 <CloudMessage/>
                 <UpgradeMessage/>
+                <ReconnectNotice/>
             </div>
         );
     },

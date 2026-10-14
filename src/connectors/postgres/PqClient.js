@@ -70,6 +70,15 @@ var Client = function(connstr, password, redshift){
 
     this.connected = false;
 
+    // set by Database for user-query clients: a session that dies unexpectedly
+    // marks the tab's session lost, and the next successful connect reports it
+    // (the new backend session has no SET GUCs, search_path, temp tables...)
+    this.onSessionLost = null;
+    this.onConnect = null;
+
+    // we ended the socket ourselves (client swap, password change): not a drop
+    this.deliberate = false;
+
     this.callback = null;
 
     this.err_callback = null;
@@ -104,6 +113,7 @@ var Client = function(connstr, password, redshift){
     };
 
     this.silentCancel = function(){
+        self.deliberate = true;
         self.client.end();
     };
 
@@ -114,6 +124,7 @@ var Client = function(connstr, password, redshift){
     };
 
     this.disconnect = function(){
+        self.deliberate = true;
         self.connected = false;
         self.client.end();
     };
@@ -177,6 +188,7 @@ var Client = function(connstr, password, redshift){
                     err_callback(flattenConnError(err));
                 } else {
                     self.connected = true;
+                    if (self.onConnect) self.onConnect();
                     self._executeQuery(query, callback, err_callback)
                 }
             });
@@ -209,10 +221,14 @@ var Client = function(connstr, password, redshift){
     // which is the reconnect.
     this.client.on('error', function(err){
         console.log('postgres connection lost: ' + (err && err.message ? err.message : err));
+        // pg emits error-then-end for one drop: the `connected` guard fires the
+        // hook once, and only for a session that was actually live
+        if (self.connected && !self.deliberate && self.onSessionLost) self.onSessionLost();
         self.connected = false;
     });
 
     this.client.on('end', function(){
+        if (self.connected && !self.deliberate && self.onSessionLost) self.onSessionLost();
         self.connected = false;
     });
 
